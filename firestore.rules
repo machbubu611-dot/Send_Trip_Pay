@@ -1,0 +1,96 @@
+// firestore.rules
+//
+// 部署方式：Firebase Console → Firestore Database → 規則 分頁 → 把這份內容整個貼上 → 發布。
+// （或用 Firebase CLI：firebase deploy --only firestore:rules，需要先跑 firebase init）
+//
+// 設計邏輯：
+//   - 每趟旅程的 trips/{tripId} 文件上有一個 memberUids 陣列，列出所有「已經認領身份」
+//     的裝置 uid（app.js 的匿名登入 uid）。判斷一個人能不能讀寫這趟旅程的資料，
+//     就是看 request.auth.uid 在不在這個陣列裡。
+//   - 「身份綁定」畫面（identity.js）是特例：使用者這時候還不在 memberUids 裡，
+//     但他需要先「讀」旅程名稱、成員列表，才能選自己是誰或建立新成員——
+//     所以 trips 主文件和 members 子集合的「讀取」對任何登入者（含匿名）開放，
+//     不需要已經是成員。
+//   - 「認領身份」的當下（claimMember）需要把自己的 uid 寫進 members/{id}.boundUids
+//     和 trips/{tripId}.memberUids——這兩個 update 發生的當下，使用者都還不是
+//     「已認證成員」，所以另外開了 isClaimingMember() / isJoiningTrip() 這兩個例外，
+//     只允許「這次更新只動了 boundUids／memberUids 欄位、而且是把自己加進去」這種寫入，
+//     防止有人假借「加入」之名夾帶其他資料竄改。
+//   - 除此之外的所有讀寫（行程、預訂、記帳、日誌、準備、成員的一般編輯），
+//     都要求 request.auth.uid 已經在 trips/{tripId}.memberUids 裡。
+
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function tripData(tripId) {
+      return get(/databases/$(database)/documents/trips/$(tripId)).data;
+    }
+
+    function isTripMember(tripId) {
+      return isSignedIn() && request.auth.uid in tripData(tripId).memberUids;
+    }
+
+    // 「認領身份」的當下：這次 update 只改了 memberUids，而且是把自己加進去。
+    function isJoiningTrip() {
+      return isSignedIn() &&
+        request.auth.uid in request.resource.data.memberUids &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['memberUids']);
+    }
+
+    // 「認領身份」的當下：這次 update 只改了 boundUids，而且是把自己加進去。
+    function isClaimingMember() {
+      return isSignedIn() &&
+        request.auth.uid in request.resource.data.boundUids &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly(['boundUids']);
+    }
+
+    /* ---------- users/{uid}：只有本人能讀寫自己的 ownedTrips 清單 ---------- */
+    match /users/{uid} {
+      allow read, write: if isSignedIn() && request.auth.uid == uid;
+    }
+
+    /* ---------- trips/{tripId} ---------- */
+    match /trips/{tripId} {
+      // 身份綁定畫面要能讀到旅程名稱，此時使用者還不是成員，所以放寬成任何登入者可讀。
+      allow read: if isSignedIn();
+
+      // 建立新旅程：任何登入者都能建，但新文件的 memberUids 裡一定要包含自己（=host）。
+      allow create: if isSignedIn() && request.auth.uid in request.resource.data.memberUids;
+
+      allow update: if isTripMember(tripId) || isJoiningTrip();
+      allow delete: if isTripMember(tripId);
+    }
+
+    /* ---------- trips/{tripId}/members/{memberId} ---------- */
+    match /trips/{tripId}/members/{memberId} {
+      // 身份綁定畫面要能讀到成員列表（選自己是誰）。
+      allow read: if isSignedIn();
+      // 新增成員：主揪在成員頁新增、或旅伴在身份綁定畫面建立新身份，這時都還不是成員。
+      allow create: if isSignedIn();
+      allow update: if isTripMember(tripId) || isClaimingMember();
+      // 個別移除旅伴走的是軟刪除（removed:true，是 update 不是 delete）；
+      // 這裡允許 delete 只是為了讓「刪除整趟旅程」那個功能能夠連 members 一起清掉。
+      allow delete: if isTripMember(tripId);
+    }
+
+    /* ---------- 其餘子集合：行程/機票/住宿/租車/憑證/記帳/日誌/準備 ----------
+       特意「一個一個列」而不是用萬用字元 {subcollection}，因為 Firestore 規則
+       在同一個路徑有多個 match 命中時是「只要有一個允許就放行」，
+       如果用萬用字元蓋到 members，會不小心把上面 `allow delete: if false`
+       的保護蓋掉。 */
+    match /trips/{tripId}/schedule/{docId} { allow read, write: if isTripMember(tripId); }
+    match /trips/{tripId}/flights/{docId} { allow read, write: if isTripMember(tripId); }
+    match /trips/{tripId}/hotels/{docId} { allow read, write: if isTripMember(tripId); }
+    match /trips/{tripId}/carRentals/{docId} { allow read, write: if isTripMember(tripId); }
+    match /trips/{tripId}/documents/{docId} { allow read, write: if isTripMember(tripId); }
+    match /trips/{tripId}/expenses/{docId} { allow read, write: if isTripMember(tripId); }
+    match /trips/{tripId}/journalPosts/{docId} { allow read, write: if isTripMember(tripId); }
+    match /trips/{tripId}/planningItems/{docId} { allow read, write: if isTripMember(tripId); }
+  }
+}

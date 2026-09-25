@@ -1,0 +1,30 @@
+// storage.rules
+//
+// 部署方式：Firebase Console → Storage → 規則 分頁 → 把這份內容整個貼上 → 發布。
+//
+// 設計邏輯：這個 App 上傳的檔案都存在 trips/{tripId}/... 路徑下（住宿封面、
+// 各種憑證、日誌照片、準備清單照片、成員頭像）。這裡直接讀取 Firestore 裡
+// 對應旅程的 memberUids 陣列，判斷目前這個 uid 是不是這趟旅程的成員，
+// 邏輯跟 firestore.rules 是同一套。
+//
+// 如果你的 Firebase 專案剛升級 Blaze、Storage 讀取 Firestore 這個功能
+// 一時用不了（跳出規則錯誤），可以先退回下面註解掉的簡化版本
+// （只要求登入即可讀寫，靠 tripId 本身是隨機值來做基本防護），
+// 之後再換回嚴格版本。
+
+rules_version = '2';
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    match /trips/{tripId}/{allPaths=**} {
+      allow read, write: if request.auth != null &&
+        request.auth.uid in firestore.get(/databases/(default)/documents/trips/$(tripId)).data.memberUids;
+    }
+
+    // ---- 簡化版本（如果上面那版一直失敗，先改用這個） ----
+    // match /trips/{tripId}/{allPaths=**} {
+    //   allow read, write: if request.auth != null;
+    // }
+  }
+}

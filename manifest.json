@@ -1,0 +1,13 @@
+{
+  "name": "Send Trip Pay",
+  "short_name": "Send Trip Pay",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#F7F4EB",
+  "theme_color": "#F7F4EB",
+  "icons": [
+    { "src": "./assets/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "./assets/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "./assets/icons/icon-512-maskable.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
