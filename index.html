@@ -533,9 +533,9 @@ button, input, textarea {
 .t-time{ width: 40px; flex: 0 0 auto; font-size: 12px; color: var(--ink-soft); padding-top: 14px; font-weight: 500; }
 .t-card{ flex: 1; background: var(--white); border-radius: 18px; padding: 12px 14px; box-shadow: var(--shadow-sm); cursor: pointer; min-width: 0; }
 .t-cat{ display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 8px; color: var(--white); font-family: var(--font-heading); margin-bottom: 6px; }
-.t-card .t-title{ font-size: 14px; font-weight: 500; }
-.t-card .t-loc{ font-size: 12px; color: var(--sage-dark); margin-top: 4px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; background: var(--sage-light); border-radius: 10px; cursor: pointer; }
-.t-card .t-loc:active{ transform: scale(0.96); }
+.t-card .t-title{ font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.t-nav-icon{ display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--sage-light); color: var(--sage-dark); font-size: 11px; cursor: pointer; flex: 0 0 auto; }
+.t-nav-icon:active{ transform: scale(0.9); }
 .t-note{ margin-top: 7px; font-size: 11px; color: var(--warn); background: var(--warn-bg); padding: 4px 9px; border-radius: 8px; display: flex; align-items: center; gap: 5px; }
 .t-note span{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
 
@@ -6140,8 +6140,7 @@ export function mountScheduleView(container, ctx) {
             <div class="t-time">${e.time || ""}</div>
             <div class="t-card">
               <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>
-              <div class="t-title">${e.title || "（未命名）"}</div>
-              ${e.location?.googleMapsUrl ? `<div class="t-loc t-nav-icon" data-nav-url="${e.location.googleMapsUrl}"><i class="fa-solid fa-location-arrow"></i>在 Google 地圖開啟</div>` : ""}
+              <div class="t-title">${e.title || "（未命名）"}${e.location?.googleMapsUrl ? `<span class="t-nav-icon" data-nav-url="${e.location.googleMapsUrl}" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></span>` : ""}</div>
               ${e.note ? `<div class="t-note"><i class="fa-solid fa-triangle-exclamation"></i><span>${truncate(e.note, 20)}</span></div>` : ""}
             </div>
           </div>
