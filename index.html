@@ -534,9 +534,8 @@ button, input, textarea {
 .t-card{ flex: 1; background: var(--white); border-radius: 18px; padding: 12px 14px; box-shadow: var(--shadow-sm); cursor: pointer; min-width: 0; }
 .t-cat{ display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 8px; color: var(--white); font-family: var(--font-heading); margin-bottom: 6px; }
 .t-card .t-title{ font-size: 14px; font-weight: 500; }
-.t-card .t-loc{ font-size: 12px; color: var(--ink-soft); margin-top: 2px; display: flex; align-items: center; gap: 6px; }
-.t-nav-icon{ color: var(--sage-dark); padding: 4px 6px; margin-left: 2px; cursor: pointer; }
-.t-nav-icon:active{ transform: scale(0.9); }
+.t-card .t-loc{ font-size: 12px; color: var(--sage-dark); margin-top: 4px; display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; background: var(--sage-light); border-radius: 10px; cursor: pointer; }
+.t-card .t-loc:active{ transform: scale(0.96); }
 .t-note{ margin-top: 7px; font-size: 11px; color: var(--warn); background: var(--warn-bg); padding: 4px 9px; border-radius: 8px; display: flex; align-items: center; gap: 5px; }
 .t-note span{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
 
@@ -5987,9 +5986,7 @@ export function renderScheduleView() {
           <div><label class="field-label">行程名稱</label><input type="text" class="text-input" id="fieldTitle" placeholder="例如：白色戀人公園"></div>
         </div>
 
-        <label class="field-label">地點 <span style="font-weight:400;color:var(--ink-soft);">· 純文字備忘，不驗證</span></label>
-        <input type="text" class="text-input" id="fieldLoc" placeholder="輸入地址或地標名稱">
-        <label class="field-label" style="margin-top:10px;">Google 地圖連結 <span style="font-weight:400;color:var(--ink-soft);">· 選填，貼上分享連結就能一鍵導航</span></label>
+        <label class="field-label">Google 地圖連結 <span style="font-weight:400;color:var(--ink-soft);">· 選填，貼上分享連結就能一鍵導航</span></label>
         <div class="loc-input-row">
           <input type="text" class="text-input" id="fieldMapsUrl" placeholder="貼上 Google 地圖連結">
           <button class="btn maps-nav-btn" id="btnOpenFieldMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
@@ -6040,7 +6037,6 @@ export function mountScheduleView(container, ctx) {
   const hotelQuickpick = container.querySelector("#hotelQuickpick");
   const fieldTime = container.querySelector("#fieldTime");
   const fieldTitle = container.querySelector("#fieldTitle");
-  const fieldLoc = container.querySelector("#fieldLoc");
   const fieldMapsUrl = container.querySelector("#fieldMapsUrl");
   wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"));
   const todoListEl = container.querySelector("#todoList");
@@ -6145,7 +6141,7 @@ export function mountScheduleView(container, ctx) {
             <div class="t-card">
               <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>
               <div class="t-title">${e.title || "（未命名）"}</div>
-              ${e.location?.formattedAddress ? `<div class="t-loc"><i class="fa-solid fa-location-dot"></i>${e.location.formattedAddress}${e.location?.googleMapsUrl ? `<i class="fa-solid fa-location-arrow t-nav-icon" data-nav-url="${e.location.googleMapsUrl}" title="在 Google 地圖開啟"></i>` : ""}</div>` : ""}
+              ${e.location?.googleMapsUrl ? `<div class="t-loc t-nav-icon" data-nav-url="${e.location.googleMapsUrl}"><i class="fa-solid fa-location-arrow"></i>在 Google 地圖開啟</div>` : ""}
               ${e.note ? `<div class="t-note"><i class="fa-solid fa-triangle-exclamation"></i><span>${truncate(e.note, 20)}</span></div>` : ""}
             </div>
           </div>
@@ -6211,7 +6207,6 @@ export function mountScheduleView(container, ctx) {
     hotelQuickpick.style.display = "none";
     fieldTime.value = "10:00";
     fieldTitle.value = "";
-    fieldLoc.value = "";
     fieldMapsUrl.value = "";
     fieldMapsUrl.dispatchEvent(new Event("input"));
     fieldNote.value = "";
@@ -6273,7 +6268,6 @@ export function mountScheduleView(container, ctx) {
       chip.addEventListener("click", () => {
         const hotel = matching.find((h) => h.id === chip.dataset.hotelId);
         fieldTitle.value = hotel.name;
-        fieldLoc.value = hotel.location?.formattedAddress || "";
         fieldMapsUrl.value = hotel.location?.googleMapsUrl || "";
         fieldMapsUrl.dispatchEvent(new Event("input"));
         fieldTime.value = "22:00";
@@ -6304,10 +6298,6 @@ export function mountScheduleView(container, ctx) {
     });
   });
 
-  fieldLoc.addEventListener("input", () => {
-    updateSaveButton();
-  });
-
   container.querySelector("#btnAddTodo").addEventListener("click", () => {
     sheetTodos.push({ id: `t${Date.now()}`, text: "", checked: false });
     renderTodoList();
@@ -6335,7 +6325,6 @@ export function mountScheduleView(container, ctx) {
     }
     fieldTime.value = ev.time || "10:00";
     fieldTitle.value = ev.title || "";
-    fieldLoc.value = ev.location?.formattedAddress || "";
     fieldMapsUrl.value = ev.location?.googleMapsUrl || "";
     fieldMapsUrl.dispatchEvent(new Event("input"));
     fieldNote.value = ev.note || "";
@@ -6379,7 +6368,7 @@ export function mountScheduleView(container, ctx) {
       time: fieldTime.value,
       category: selectedCategory,
       title: fieldTitle.value.trim(),
-      location: withMapsUrl({ formattedAddress: fieldLoc.value.trim() }, fieldMapsUrl.value),
+      location: withMapsUrl({}, fieldMapsUrl.value),
       note: fieldNote.value.trim(),
       todos: sheetTodos.map((t) => ({ id: t.id, text: t.text, checked: t.checked })),
       createdBy: memberId,
