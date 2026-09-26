@@ -557,6 +557,7 @@ button, input, textarea {
 .verify-status{ margin-top: 8px; margin-bottom: 16px; font-size: 11.5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 0; }
 .verify-status.loading{ color: var(--ink-soft); }
 .verify-status.ok{ color: var(--ok); }
+.verify-status.approx{ color: var(--warn); }
 .verify-status.fail{ color: var(--warn); }
 .spinner{ width: 12px; height: 12px; border: 2px solid var(--sage-light); border-top-color: var(--sage-dark); border-radius: 50%; animation: spin 0.7s linear infinite; }
 @keyframes spin{ to{ transform: rotate(360deg); } }
@@ -1722,16 +1723,11 @@ export async function fetchWeatherForDate(lat, lon, dateStr) {
 /* ==================== 地址驗證（OpenStreetMap Nominatim，免金鑰、免費） ==================== */
 
 /**
- * 用地址/地點名稱查詢座標與正式地址，取代原本模擬用的 setTimeout。
- * 免金鑰、免綁信用卡，跟本專案其他即時資料（天氣、匯率、城市定位）走同一套「免費開源服務」哲學。
- *
- * 使用限制：Nominatim 官方 demo instance 的公平使用政策要求呼叫頻率不超過 1 次/秒，
- * 這裡是使用者手動按「驗證」才觸發一次，一般使用情境下不會踩到這個限制。
- * 準確度上，地標／飯店名稱通常沒問題，純門牌號碼在日本偶爾會抓不準，這是免費方案的已知取捨。
+ * 直接查一次 Nominatim，回傳第一筆結果（或 null）。
  * @param {string} query
  * @returns {Promise<{formattedAddress:string, lat:number, lon:number}|null>}
  */
-export async function verifyLocation(query) {
+async function nominatimLookup(query) {
   const res = await fetch(
     `https://nominatim.openstreetmap.org/search?q=${encodeURIComponent(query)}&format=json&limit=1`,
     { headers: { "Accept-Language": "zh-TW,zh;q=0.9,ja;q=0.8,en;q=0.7" } }
@@ -1741,6 +1737,92 @@ export async function verifyLocation(query) {
   const first = data?.[0];
   if (!first) return null;
   return { formattedAddress: first.display_name, lat: Number(first.lat), lon: Number(first.lon) };
+}
+
+/**
+ * 把使用者貼上來的地址（通常是從 Google 地圖複製的）拆解、清理成幾種簡化版本，
+ * 依序嘗試查詢。這是為了解決一個實測發現的真實問題：
+ *
+ * 從 Google 地圖複製的日文地址，常常整段丟給 Nominatim 會查不到——不是因為地址是錯的，
+ * 而是因為（實測驗證過）：
+ *   1. Google 常把「郡」翻成 "XX District"，但 OpenStreetMap 資料庫裡很多鄉下地區的
+ *      「郡」層級行政區劃，並沒有登記這個英文名稱，導致整串查詢因為這個詞卡住、整段都比對不到；
+ *   2. Google 的地址順序是「大到小」（國家 → 縣 → 郡 → 町 → 地名），但 Nominatim
+ *      的自由文字比對用「小到大」（地名 → 町 → 縣）的順序成功率明顯更高；
+ *   3. 「字OO號OO番」這種到門牌／地番等級的細節，鄉下地區、離島常常根本不在
+ *      OpenStreetMap 的資料裡（這是這個免費資料源本身的涵蓋率限制，不是查詢方式的問題），
+ *      查到「到町／地名這一層」通常就是這類地址能拿到的最好結果。
+ *
+ * 這裡不是繞過限制，是遇到查不到的時候，模仿一個人會怎麼「越查越粗略」重試，
+ * 真的沒有更細的資料時，退而求其次給一個範圍正確、但不是精確門牌的座標。
+ * @param {string} query
+ * @returns {Promise<{formattedAddress:string, lat:number, lon:number, approximate:boolean}|null>}
+ */
+export async function verifyLocation(query) {
+  const raw = query.trim();
+  const first = await nominatimLookup(raw);
+  if (first) return { ...first, approximate: false };
+
+  // 抽出日本郵遞區號（如果有），當最後的保底查詢用
+  const postcodeMatch = raw.match(/\d{3}-?\d{4}/);
+  const postcode = postcodeMatch ? postcodeMatch[0].replace(/^(\d{3})(\d{4})$/, "$1-$2") : null;
+
+  // 清掉「日本」「Japan」跟郵遞區號本身，剩下的按逗號拆成一段一段
+  const cleaned = raw
+    .replace(/日本/g, "")
+    .replace(/Japan/gi, "")
+    .replace(/〒\s*\d{3}-?\d{4}/g, "")
+    .replace(/\d{3}-?\d{4}/g, "")
+    .trim();
+  const segments = cleaned.split(/[,，]/).map((s) => s.trim()).filter(Boolean);
+
+  if (segments.length < 2) {
+    // 沒有逗號可以拆，退回郵遞區號查詢（如果有的話）就結束
+    if (postcode) {
+      const byPostcode = await sleepThen(1100, () => nominatimLookup(`${postcode}, Japan`));
+      if (byPostcode) return { ...byPostcode, approximate: true };
+    }
+    return null;
+  }
+
+  const isAdminFiller = (s) => /district|county|郡/i.test(s);
+  const reversed = [...segments].reverse();
+  const reversedNoFiller = reversed.filter((s) => !isAdminFiller(s));
+
+  const candidates = [];
+  const pushCandidate = (arr) => {
+    if (arr.length === 0) return;
+    const joined = arr.join(", ");
+    if (joined && joined !== raw && !candidates.includes(joined)) candidates.push(joined);
+  };
+
+  pushCandidate(segments); // 原順序，只是清掉了「日本」跟郵遞區號
+  pushCandidate(segments.filter((s) => !isAdminFiller(s))); // 原順序，拿掉「XX District/郡」
+  pushCandidate(reversed); // 反過來變成「小到大」
+  pushCandidate(reversedNoFiller); // 小到大，且拿掉「XX District/郡」
+  // 從「小到大且拿掉 District」這份清單，由細節往粗略一路砍到只剩 2 段
+  for (let cut = 1; cut <= reversedNoFiller.length - 2; cut++) {
+    pushCandidate(reversedNoFiller.slice(cut));
+  }
+
+  const MAX_ATTEMPTS = 7; // 幫她多試幾次，同時把最壞情況的等待時間控制在合理範圍內
+  for (let i = 0; i < Math.min(candidates.length, MAX_ATTEMPTS); i++) {
+    const result = await sleepThen(1100, () => nominatimLookup(candidates[i]));
+    if (result) return { ...result, approximate: true };
+  }
+
+  if (postcode) {
+    const byPostcode = await sleepThen(1100, () => nominatimLookup(`${postcode}, Japan`));
+    if (byPostcode) return { ...byPostcode, approximate: true };
+  }
+
+  return null;
+}
+
+function sleepThen(ms, fn) {
+  return new Promise((resolve, reject) => {
+    setTimeout(() => fn().then(resolve, reject), ms);
+  });
 }
 
 /**
@@ -2607,7 +2689,7 @@ export function mountBookingsView(container, ctx) {
       return;
     }
     hotelVerifyStatus.className = "verify-status loading";
-    hotelVerifyStatus.innerHTML = `<div class="spinner"></div> 正在比對地圖位置…`;
+    hotelVerifyStatus.innerHTML = `<div class="spinner"></div> 正在比對地圖位置…（地址比較複雜的話可能要重試幾次，會多花幾秒）`;
     try {
       const result = await verifyLocation(loc);
       if (!result) {
@@ -2620,8 +2702,10 @@ export function mountBookingsView(container, ctx) {
       }
       hotelLocVerified = true;
       hotelVerifiedLocation = result;
-      hotelVerifyStatus.className = "verify-status ok";
-      hotelVerifyStatus.innerHTML = `<i class="fa-solid fa-circle-check"></i> 已驗證：${result.formattedAddress}`;
+      hotelVerifyStatus.className = result.approximate ? "verify-status approx" : "verify-status ok";
+      hotelVerifyStatus.innerHTML = result.approximate
+        ? `<i class="fa-solid fa-triangle-exclamation"></i> 只找到大概位置：${result.formattedAddress}（門牌等級的細節這個免費地圖資料庫沒收錄，建議之後手動核對地圖）`
+        : `<i class="fa-solid fa-circle-check"></i> 已驗證：${result.formattedAddress}`;
       updateHotelSaveBtn();
     } catch (err) {
       console.error("[住宿地址驗證失敗]", err);
@@ -2851,7 +2935,7 @@ export function mountBookingsView(container, ctx) {
       return;
     }
     statusEl.className = "verify-status loading";
-    statusEl.innerHTML = `<div class="spinner"></div> 正在比對地圖位置…`;
+    statusEl.innerHTML = `<div class="spinner"></div> 正在比對地圖位置…（地址比較複雜的話可能要重試幾次，會多花幾秒）`;
     try {
       const result = await verifyLocation(loc);
       if (!result) {
@@ -2864,8 +2948,10 @@ export function mountBookingsView(container, ctx) {
       }
       setVerified(true);
       setLocation(result);
-      statusEl.className = "verify-status ok";
-      statusEl.innerHTML = `<i class="fa-solid fa-circle-check"></i> 已驗證：${result.formattedAddress}`;
+      statusEl.className = result.approximate ? "verify-status approx" : "verify-status ok";
+      statusEl.innerHTML = result.approximate
+        ? `<i class="fa-solid fa-triangle-exclamation"></i> 只找到大概位置：${result.formattedAddress}（門牌等級的細節這個免費地圖資料庫沒收錄，建議之後手動核對地圖）`
+        : `<i class="fa-solid fa-circle-check"></i> 已驗證：${result.formattedAddress}`;
       updateCarSaveBtn();
     } catch (err) {
       console.error("[租車地點驗證失敗]", err);
@@ -6159,7 +6245,7 @@ export function mountScheduleView(container, ctx) {
       return;
     }
     verifyStatus.className = "verify-status loading";
-    verifyStatus.innerHTML = `<div class="spinner"></div> 正在比對地圖位置…`;
+    verifyStatus.innerHTML = `<div class="spinner"></div> 正在比對地圖位置…（地址比較複雜的話可能要重試幾次，會多花幾秒）`;
     try {
       const result = await verifyLocation(loc);
       if (!result) {
@@ -6172,8 +6258,10 @@ export function mountScheduleView(container, ctx) {
       }
       locVerified = true;
       verifiedLocation = result;
-      verifyStatus.className = "verify-status ok";
-      verifyStatus.innerHTML = `<i class="fa-solid fa-circle-check"></i> 已驗證：${result.formattedAddress}`;
+      verifyStatus.className = result.approximate ? "verify-status approx" : "verify-status ok";
+      verifyStatus.innerHTML = result.approximate
+        ? `<i class="fa-solid fa-triangle-exclamation"></i> 只找到大概位置：${result.formattedAddress}（門牌等級的細節這個免費地圖資料庫沒收錄，建議之後手動核對地圖）`
+        : `<i class="fa-solid fa-circle-check"></i> 已驗證：${result.formattedAddress}`;
       updateSaveButton();
     } catch (err) {
       console.error("[行程地點驗證失敗]", err);
