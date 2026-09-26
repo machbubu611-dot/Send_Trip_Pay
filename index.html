@@ -5987,14 +5987,11 @@ export function renderScheduleView() {
           <div><label class="field-label">行程名稱</label><input type="text" class="text-input" id="fieldTitle" placeholder="例如：白色戀人公園"></div>
         </div>
 
-        <label class="field-label">地點</label>
+        <label class="field-label">地點 <span style="font-weight:400;color:var(--ink-soft);">· 純文字備忘，不驗證</span></label>
+        <input type="text" class="text-input" id="fieldLoc" placeholder="輸入地址或地標名稱">
+        <label class="field-label" style="margin-top:10px;">Google 地圖連結 <span style="font-weight:400;color:var(--ink-soft);">· 選填，貼上分享連結就能一鍵導航</span></label>
         <div class="loc-input-row">
-          <input type="text" class="text-input" id="fieldLoc" placeholder="輸入地址或地標名稱">
-          <button class="btn verify-btn" id="btnVerifyLoc">驗證</button>
-        </div>
-        <div class="verify-status" id="verifyStatus"></div>
-        <div class="loc-input-row">
-          <input type="text" class="text-input" id="fieldMapsUrl" placeholder="貼上 Google 地圖連結（選填，方便一鍵導航）">
+          <input type="text" class="text-input" id="fieldMapsUrl" placeholder="貼上 Google 地圖連結">
           <button class="btn maps-nav-btn" id="btnOpenFieldMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
         </div>
 
@@ -6032,8 +6029,6 @@ export function mountScheduleView(container, ctx) {
   let editingEventId = null;
   let sheetTodos = [];
   let selectedCategory = null;
-  let locVerified = false;
-  let verifiedLocation = null; // { formattedAddress, lat, lon }
   let dragEl = null;
 
   const dateScrollEl = container.querySelector("#dateScroll");
@@ -6046,7 +6041,6 @@ export function mountScheduleView(container, ctx) {
   const fieldTime = container.querySelector("#fieldTime");
   const fieldTitle = container.querySelector("#fieldTitle");
   const fieldLoc = container.querySelector("#fieldLoc");
-  const verifyStatus = container.querySelector("#verifyStatus");
   const fieldMapsUrl = container.querySelector("#fieldMapsUrl");
   wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"));
   const todoListEl = container.querySelector("#todoList");
@@ -6211,8 +6205,6 @@ export function mountScheduleView(container, ctx) {
   function resetSheetState() {
     editingEventId = null;
     selectedCategory = null;
-    locVerified = false;
-    verifiedLocation = null;
     sheetTodos = [];
     catPicker.querySelectorAll(".cat-opt").forEach((o) => o.classList.remove("selected"));
     hotelQuickpick.innerHTML = "";
@@ -6223,8 +6215,6 @@ export function mountScheduleView(container, ctx) {
     fieldMapsUrl.value = "";
     fieldMapsUrl.dispatchEvent(new Event("input"));
     fieldNote.value = "";
-    verifyStatus.innerHTML = "";
-    verifyStatus.className = "verify-status";
     renderTodoList();
     updateSaveButton();
   }
@@ -6260,8 +6250,8 @@ export function mountScheduleView(container, ctx) {
   }
 
   function updateSaveButton() {
-    saveBtn.disabled = !locVerified;
-    saveBtn.textContent = locVerified ? (editingEventId ? "儲存變更" : "儲存行程") : "先驗證地點";
+    saveBtn.disabled = false;
+    saveBtn.textContent = editingEventId ? "儲存變更" : "儲存行程";
   }
 
   async function showHotelQuickpick() {
@@ -6287,12 +6277,6 @@ export function mountScheduleView(container, ctx) {
         fieldMapsUrl.value = hotel.location?.googleMapsUrl || "";
         fieldMapsUrl.dispatchEvent(new Event("input"));
         fieldTime.value = "22:00";
-        locVerified = true;
-        verifiedLocation = hotel.location?.lat != null
-          ? { formattedAddress: hotel.location.formattedAddress, lat: hotel.location.lat, lon: hotel.location.lon }
-          : { formattedAddress: hotel.location?.formattedAddress || "" };
-        verifyStatus.className = "verify-status ok";
-        verifyStatus.innerHTML = `<i class="fa-solid fa-circle-check"></i> 已從預訂資料帶入，地址視為已驗證`;
         updateSaveButton();
       });
     });
@@ -6321,47 +6305,7 @@ export function mountScheduleView(container, ctx) {
   });
 
   fieldLoc.addEventListener("input", () => {
-    locVerified = false;
-    verifiedLocation = null;
-    verifyStatus.innerHTML = "";
-    verifyStatus.className = "verify-status";
     updateSaveButton();
-  });
-
-  container.querySelector("#btnVerifyLoc").addEventListener("click", async () => {
-    const loc = fieldLoc.value.trim();
-    if (!loc) {
-      verifyStatus.className = "verify-status fail";
-      verifyStatus.innerHTML = `<i class="fa-solid fa-circle-exclamation"></i> 請先輸入地點名稱`;
-      return;
-    }
-    verifyStatus.className = "verify-status loading";
-    verifyStatus.innerHTML = `<div class="spinner"></div> 正在比對地圖位置…（地址比較複雜的話可能要重試幾次，會多花幾秒）`;
-    try {
-      const result = await verifyLocation(loc);
-      if (!result) {
-        locVerified = false;
-        verifiedLocation = null;
-        verifyStatus.className = "verify-status fail";
-        verifyStatus.innerHTML = `<i class="fa-solid fa-circle-exclamation"></i> 找不到這個地點，請換個寫法試試`;
-        updateSaveButton();
-        return;
-      }
-      locVerified = true;
-      verifiedLocation = result;
-      verifyStatus.className = result.approximate ? "verify-status approx" : "verify-status ok";
-      verifyStatus.innerHTML = result.approximate
-        ? `<i class="fa-solid fa-triangle-exclamation"></i> 只找到大概位置：${result.formattedAddress}（門牌等級的細節這個免費地圖資料庫沒收錄，建議之後手動核對地圖）`
-        : `<i class="fa-solid fa-circle-check"></i> 已驗證：${result.formattedAddress}`;
-      updateSaveButton();
-    } catch (err) {
-      console.error("[行程地點驗證失敗]", err);
-      locVerified = false;
-      verifiedLocation = null;
-      verifyStatus.className = "verify-status fail";
-      verifyStatus.innerHTML = `<i class="fa-solid fa-circle-exclamation"></i> 驗證失敗，請檢查網路連線`;
-      updateSaveButton();
-    }
   });
 
   container.querySelector("#btnAddTodo").addEventListener("click", () => {
@@ -6397,14 +6341,6 @@ export function mountScheduleView(container, ctx) {
     fieldNote.value = ev.note || "";
     sheetTodos = (ev.todos || []).map((t, i) => ({ ...t, id: t.id || `t${i}` }));
     renderTodoList();
-
-    locVerified = true;
-    // 舊資料可能沒有 lat/lon；沿用既有 formattedAddress 當底，使用者沒改地點欄位就不會被清空
-    verifiedLocation = ev.location?.lat != null
-      ? { formattedAddress: ev.location.formattedAddress, lat: ev.location.lat, lon: ev.location.lon }
-      : { formattedAddress: ev.location?.formattedAddress || "" };
-    verifyStatus.className = "verify-status ok";
-    verifyStatus.innerHTML = `<i class="fa-solid fa-circle-check"></i> 地點已驗證`;
     updateSaveButton();
 
     if (ev.category === "stay") showHotelQuickpick();
@@ -6443,7 +6379,7 @@ export function mountScheduleView(container, ctx) {
       time: fieldTime.value,
       category: selectedCategory,
       title: fieldTitle.value.trim(),
-      location: withMapsUrl(verifiedLocation || { formattedAddress: fieldLoc.value.trim() }, fieldMapsUrl.value),
+      location: withMapsUrl({ formattedAddress: fieldLoc.value.trim() }, fieldMapsUrl.value),
       note: fieldNote.value.trim(),
       todos: sheetTodos.map((t) => ({ id: t.id, text: t.text, checked: t.checked })),
       createdBy: memberId,
