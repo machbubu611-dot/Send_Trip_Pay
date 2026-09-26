@@ -534,7 +534,9 @@ button, input, textarea {
 .t-card{ flex: 1; background: var(--white); border-radius: 18px; padding: 12px 14px; box-shadow: var(--shadow-sm); cursor: pointer; min-width: 0; }
 .t-cat{ display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 8px; color: var(--white); font-family: var(--font-heading); margin-bottom: 6px; }
 .t-card .t-title{ font-size: 14px; font-weight: 500; }
-.t-card .t-loc{ font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
+.t-card .t-loc{ font-size: 12px; color: var(--ink-soft); margin-top: 2px; display: flex; align-items: center; gap: 6px; }
+.t-nav-icon{ color: var(--sage-dark); padding: 4px 6px; margin-left: 2px; cursor: pointer; }
+.t-nav-icon:active{ transform: scale(0.9); }
 .t-note{ margin-top: 7px; font-size: 11px; color: var(--warn); background: var(--warn-bg); padding: 4px 9px; border-radius: 8px; display: flex; align-items: center; gap: 5px; }
 .t-note span{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
 
@@ -553,6 +555,9 @@ button, input, textarea {
 .loc-input-row{ display: flex; gap: 8px; }
 .loc-input-row .text-input{ flex: 1; margin-bottom: 0; }
 .verify-btn{ width: 74px; height: 42px; padding: 0; background: var(--sage); color: var(--white); box-shadow: 2px 2px 0 var(--sage-dark); font-size: 12px; }
+.maps-nav-btn{ width: 46px; height: 42px; padding: 0; background: var(--white); border: 2px solid var(--sage); color: var(--sage-dark); box-shadow: none; font-size: 15px; flex: 0 0 auto; }
+.maps-nav-btn:disabled{ opacity: 0.35; cursor: not-allowed; }
+.maps-nav-btn:active:not(:disabled){ transform: scale(0.94); }
 
 .verify-status{ margin-top: 8px; margin-bottom: 16px; font-size: 11.5px; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; min-height: 0; }
 .verify-status.loading{ color: var(--ink-soft); }
@@ -1844,6 +1849,42 @@ function localISODate(d) {
   return `${y}-${m}-${day}`;
 }
 
+/**
+ * 幫「Google 地圖連結」輸入框接上「一鍵導航」按鈕的共用邏輯：
+ * 輸入框有值就把按鈕點亮，點下去直接在新分頁開啟那個連結——單純幫使用者少一步
+ * 「複製網址→切到 Google 地圖 App→貼上」的手動流程，不做任何解析或驗證連結內容
+ * （Google 地圖的短網址 maps.app.goo.gl 需要伺服器端才能解析出實際店家/座標，
+ * 純前端做不到，所以這裡就是單純存起來、單純開啟，不嘗試從連結反推地址或座標）。
+ * @param {HTMLInputElement} input
+ * @param {HTMLButtonElement} button
+ */
+function wireMapsLinkButton(input, button) {
+  function refresh() {
+    button.disabled = !input.value.trim();
+  }
+  input.addEventListener("input", refresh);
+  refresh();
+  button.addEventListener("click", () => {
+    const url = input.value.trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) {
+      alert("這個看起來不太像網址，麻煩確認一下是不是完整複製了 Google 地圖的分享連結。");
+      return;
+    }
+    window.open(url, "_blank", "noopener");
+  });
+}
+
+/**
+ * 把「Google 地圖連結」欄位的值併進地點物件裡再存檔。
+ * 空字串就不寫這個欄位，避免 Firestore 存一堆沒意義的空字串。
+ */
+function withMapsUrl(locationObj, mapsUrlRaw) {
+  const url = (mapsUrlRaw || "").trim();
+  const base = locationObj || {};
+  return url ? { ...base, googleMapsUrl: url } : base;
+}
+
 /* ==================== 共用表情符號資料庫（頭像 / 封面） ====================
  * 全站原本有三份動物頭像清單（成員分頁／身份綁定／開團 Wizard）跟兩份封面清單
  * （開團 Wizard／旅程設定），內容還互不一致。這裡統一成單一來源，
@@ -2309,6 +2350,11 @@ export function renderBookingsView() {
           <button class="btn verify-btn" id="btnVerifyHotelLoc">驗證</button>
         </div>
         <div class="verify-status" id="hotelVerifyStatus"></div>
+        <label class="field-label">Google 地圖連結 <span style="font-weight:400;color:var(--ink-soft);">· 選填，貼上分享連結就能一鍵導航</span></label>
+        <div class="loc-input-row">
+          <input type="text" class="text-input" id="fHotelMapsUrl" placeholder="貼上 https://maps.app.goo.gl/... 分享連結">
+          <button class="btn maps-nav-btn" id="btnOpenHotelMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
+        </div>
         <label class="field-label">總金額（TWD）</label>
         <input type="number" class="text-input" id="fHotelTotal" placeholder="例如：9600">
         <label class="field-label">當晚入住成員 <span style="font-weight:400;color:var(--ink-soft);">· 用來計算每人分攤</span></label>
@@ -2341,6 +2387,10 @@ export function renderBookingsView() {
           <button class="btn verify-btn" id="btnVerifyPickupLoc">驗證</button>
         </div>
         <div class="verify-status" id="pickupVerifyStatus"></div>
+        <div class="loc-input-row">
+          <input type="text" class="text-input" id="fPickupMapsUrl" placeholder="貼上取車地點的 Google 地圖連結（選填）">
+          <button class="btn maps-nav-btn" id="btnOpenPickupMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
+        </div>
         <label class="field-label">還車</label>
         <div class="time-row">
           <div><input type="date" class="text-input" id="fDropoffDate"></div>
@@ -2351,6 +2401,10 @@ export function renderBookingsView() {
           <button class="btn verify-btn" id="btnVerifyDropoffLoc">驗證</button>
         </div>
         <div class="verify-status" id="dropoffVerifyStatus"></div>
+        <div class="loc-input-row">
+          <input type="text" class="text-input" id="fDropoffMapsUrl" placeholder="貼上還車地點的 Google 地圖連結（選填）">
+          <button class="btn maps-nav-btn" id="btnOpenDropoffMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
+        </div>
         <label class="field-label">費用（TWD） <span style="font-weight:400;color:var(--ink-soft);">· 選填</span></label>
         <input type="number" class="text-input" id="fCarCost" placeholder="例如：4500">
         <div id="carSplitWrap" style="display:none;">
@@ -2669,6 +2723,7 @@ export function mountBookingsView(container, ctx) {
   const hotelAddrInput = container.querySelector("#fHotelAddress");
   const hotelVerifyStatus = container.querySelector("#hotelVerifyStatus");
   const hotelSaveBtn = container.querySelector("#btnSaveHotel");
+  wireMapsLinkButton(container.querySelector("#fHotelMapsUrl"), container.querySelector("#btnOpenHotelMaps"));
 
   function updateHotelSaveBtn() {
     hotelSaveBtn.disabled = !hotelLocVerified;
@@ -2747,7 +2802,8 @@ export function mountBookingsView(container, ctx) {
     hotelVerifyStatus.className = "verify-status";
     container.querySelector("#hotelSheetTitle").textContent = "新增住宿";
     container.querySelector("#btnDeleteHotel").style.display = "none";
-    ["fHotelName", "fCheckinDate", "fCheckoutDate", "fHotelAddress", "fHotelTotal"].forEach((id) => (container.querySelector(`#${id}`).value = ""));
+    ["fHotelName", "fCheckinDate", "fCheckoutDate", "fHotelAddress", "fHotelMapsUrl", "fHotelTotal"].forEach((id) => (container.querySelector(`#${id}`).value = ""));
+    container.querySelector("#fHotelMapsUrl").dispatchEvent(new Event("input"));
     container.querySelector("#fCheckinTime").value = "15:00";
     container.querySelector("#fCheckoutTime").value = "11:00";
     hotelPhotoInput.value = "";
@@ -2779,6 +2835,8 @@ export function mountBookingsView(container, ctx) {
     container.querySelector("#fCheckoutDate").value = h.checkOut?.date || "";
     container.querySelector("#fCheckoutTime").value = h.checkOut?.time || "11:00";
     container.querySelector("#fHotelAddress").value = h.location?.formattedAddress || "";
+    container.querySelector("#fHotelMapsUrl").value = h.location?.googleMapsUrl || "";
+    container.querySelector("#fHotelMapsUrl").dispatchEvent(new Event("input"));
     container.querySelector("#fHotelTotal").value = h.totalCost || "";
     hotelPhotoInput.value = "";
     container.querySelector("#fHotelDoc").value = "";
@@ -2837,7 +2895,10 @@ export function mountBookingsView(container, ctx) {
         coverPhotoPosition: `${hotelCoverPosition.x}% ${hotelCoverPosition.y}%`,
         checkIn: { date: container.querySelector("#fCheckinDate").value, time: container.querySelector("#fCheckinTime").value },
         checkOut: { date: container.querySelector("#fCheckoutDate").value, time: container.querySelector("#fCheckoutTime").value },
-        location: hotelVerifiedLocation || { formattedAddress: container.querySelector("#fHotelAddress").value.trim() },
+        location: withMapsUrl(
+          hotelVerifiedLocation || { formattedAddress: container.querySelector("#fHotelAddress").value.trim() },
+          container.querySelector("#fHotelMapsUrl").value
+        ),
         totalCost: Number(container.querySelector("#fHotelTotal").value) || 0,
         splitMemberIds: getCheckedIds(container.querySelector("#hotelSplitMembers")),
         documentUrls: hotelDocUrl ? [hotelDocUrl] : [],
@@ -2909,6 +2970,8 @@ export function mountBookingsView(container, ctx) {
   const pickupVerifyStatus = container.querySelector("#pickupVerifyStatus");
   const dropoffVerifyStatus = container.querySelector("#dropoffVerifyStatus");
   const carSaveBtn = container.querySelector("#btnSaveCar");
+  wireMapsLinkButton(container.querySelector("#fPickupMapsUrl"), container.querySelector("#btnOpenPickupMaps"));
+  wireMapsLinkButton(container.querySelector("#fDropoffMapsUrl"), container.querySelector("#btnOpenDropoffMaps"));
 
   function updateCarSaveBtn() {
     const ok = carPickupVerified && carDropoffVerified;
@@ -2990,9 +3053,11 @@ export function mountBookingsView(container, ctx) {
     dropoffVerifyStatus.className = "verify-status";
     container.querySelector("#carSheetTitle").textContent = "新增租車";
     container.querySelector("#btnDeleteCar").style.display = "none";
-    ["fCarName", "fPickupDate", "fPickupTime", "fPickupLoc", "fDropoffDate", "fDropoffTime", "fDropoffLoc", "fCarCost"].forEach(
+    ["fCarName", "fPickupDate", "fPickupTime", "fPickupLoc", "fPickupMapsUrl", "fDropoffDate", "fDropoffTime", "fDropoffLoc", "fDropoffMapsUrl", "fCarCost"].forEach(
       (id) => (container.querySelector(`#${id}`).value = "")
     );
+    container.querySelector("#fPickupMapsUrl").dispatchEvent(new Event("input"));
+    container.querySelector("#fDropoffMapsUrl").dispatchEvent(new Event("input"));
     container.querySelector("#fCarDoc").value = "";
     container.querySelector("#carDocPreview").style.display = "none";
     container.querySelector("#carSplitWrap").style.display = "none";
@@ -3021,9 +3086,13 @@ export function mountBookingsView(container, ctx) {
     container.querySelector("#fPickupDate").value = c.pickup?.date || "";
     container.querySelector("#fPickupTime").value = c.pickup?.time || "";
     container.querySelector("#fPickupLoc").value = c.pickup?.location?.formattedAddress || "";
+    container.querySelector("#fPickupMapsUrl").value = c.pickup?.location?.googleMapsUrl || "";
+    container.querySelector("#fPickupMapsUrl").dispatchEvent(new Event("input"));
     container.querySelector("#fDropoffDate").value = c.dropoff?.date || "";
     container.querySelector("#fDropoffTime").value = c.dropoff?.time || "";
     container.querySelector("#fDropoffLoc").value = c.dropoff?.location?.formattedAddress || "";
+    container.querySelector("#fDropoffMapsUrl").value = c.dropoff?.location?.googleMapsUrl || "";
+    container.querySelector("#fDropoffMapsUrl").dispatchEvent(new Event("input"));
     container.querySelector("#fCarCost").value = c.totalCost || "";
     container.querySelector("#fCarDoc").value = "";
     const carDocPreview = container.querySelector("#carDocPreview");
@@ -3065,12 +3134,18 @@ export function mountBookingsView(container, ctx) {
         pickup: {
           date: container.querySelector("#fPickupDate").value,
           time: container.querySelector("#fPickupTime").value,
-          location: carPickupVerifiedLocation || { formattedAddress: container.querySelector("#fPickupLoc").value.trim() },
+          location: withMapsUrl(
+            carPickupVerifiedLocation || { formattedAddress: container.querySelector("#fPickupLoc").value.trim() },
+            container.querySelector("#fPickupMapsUrl").value
+          ),
         },
         dropoff: {
           date: container.querySelector("#fDropoffDate").value,
           time: container.querySelector("#fDropoffTime").value,
-          location: carDropoffVerifiedLocation || { formattedAddress: container.querySelector("#fDropoffLoc").value.trim() },
+          location: withMapsUrl(
+            carDropoffVerifiedLocation || { formattedAddress: container.querySelector("#fDropoffLoc").value.trim() },
+            container.querySelector("#fDropoffMapsUrl").value
+          ),
         },
         totalCost: cost,
         splitMemberIds: cost > 0 ? getCheckedIds(container.querySelector("#carSplitMembers")) : [],
@@ -5918,6 +5993,10 @@ export function renderScheduleView() {
           <button class="btn verify-btn" id="btnVerifyLoc">驗證</button>
         </div>
         <div class="verify-status" id="verifyStatus"></div>
+        <div class="loc-input-row">
+          <input type="text" class="text-input" id="fieldMapsUrl" placeholder="貼上 Google 地圖連結（選填，方便一鍵導航）">
+          <button class="btn maps-nav-btn" id="btnOpenFieldMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
+        </div>
 
         <label class="field-label">待辦事項 <span style="font-weight:400;color:var(--ink-soft);">· 純備忘</span></label>
         <div class="todo-list" id="todoList"></div>
@@ -5968,6 +6047,8 @@ export function mountScheduleView(container, ctx) {
   const fieldTitle = container.querySelector("#fieldTitle");
   const fieldLoc = container.querySelector("#fieldLoc");
   const verifyStatus = container.querySelector("#verifyStatus");
+  const fieldMapsUrl = container.querySelector("#fieldMapsUrl");
+  wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"));
   const todoListEl = container.querySelector("#todoList");
   const fieldNote = container.querySelector("#fieldNote");
   const saveBtn = container.querySelector("#btnSaveEvent");
@@ -6070,7 +6151,7 @@ export function mountScheduleView(container, ctx) {
             <div class="t-card">
               <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>
               <div class="t-title">${e.title || "（未命名）"}</div>
-              ${e.location?.formattedAddress ? `<div class="t-loc"><i class="fa-solid fa-location-dot"></i>${e.location.formattedAddress}</div>` : ""}
+              ${e.location?.formattedAddress ? `<div class="t-loc"><i class="fa-solid fa-location-dot"></i>${e.location.formattedAddress}${e.location?.googleMapsUrl ? `<i class="fa-solid fa-location-arrow t-nav-icon" data-nav-url="${e.location.googleMapsUrl}" title="在 Google 地圖開啟"></i>` : ""}</div>` : ""}
               ${e.note ? `<div class="t-note"><i class="fa-solid fa-triangle-exclamation"></i><span>${truncate(e.note, 20)}</span></div>` : ""}
             </div>
           </div>
@@ -6082,6 +6163,12 @@ export function mountScheduleView(container, ctx) {
       item.querySelector(".t-card").addEventListener("click", () => {
         const ev = events.find((e) => e.id === item.dataset.eventId);
         openEditSheet(ev);
+      });
+      item.querySelectorAll(".t-nav-icon").forEach((icon) => {
+        icon.addEventListener("click", (e) => {
+          e.stopPropagation();
+          window.open(icon.dataset.navUrl, "_blank", "noopener");
+        });
       });
       item.addEventListener("dragstart", () => {
         dragEl = item;
@@ -6133,6 +6220,8 @@ export function mountScheduleView(container, ctx) {
     fieldTime.value = "10:00";
     fieldTitle.value = "";
     fieldLoc.value = "";
+    fieldMapsUrl.value = "";
+    fieldMapsUrl.dispatchEvent(new Event("input"));
     fieldNote.value = "";
     verifyStatus.innerHTML = "";
     verifyStatus.className = "verify-status";
@@ -6195,6 +6284,8 @@ export function mountScheduleView(container, ctx) {
         const hotel = matching.find((h) => h.id === chip.dataset.hotelId);
         fieldTitle.value = hotel.name;
         fieldLoc.value = hotel.location?.formattedAddress || "";
+        fieldMapsUrl.value = hotel.location?.googleMapsUrl || "";
+        fieldMapsUrl.dispatchEvent(new Event("input"));
         fieldTime.value = "22:00";
         locVerified = true;
         verifiedLocation = hotel.location?.lat != null
@@ -6301,6 +6392,8 @@ export function mountScheduleView(container, ctx) {
     fieldTime.value = ev.time || "10:00";
     fieldTitle.value = ev.title || "";
     fieldLoc.value = ev.location?.formattedAddress || "";
+    fieldMapsUrl.value = ev.location?.googleMapsUrl || "";
+    fieldMapsUrl.dispatchEvent(new Event("input"));
     fieldNote.value = ev.note || "";
     sheetTodos = (ev.todos || []).map((t, i) => ({ ...t, id: t.id || `t${i}` }));
     renderTodoList();
@@ -6350,7 +6443,7 @@ export function mountScheduleView(container, ctx) {
       time: fieldTime.value,
       category: selectedCategory,
       title: fieldTitle.value.trim(),
-      location: verifiedLocation || { formattedAddress: fieldLoc.value.trim() },
+      location: withMapsUrl(verifiedLocation || { formattedAddress: fieldLoc.value.trim() }, fieldMapsUrl.value),
       note: fieldNote.value.trim(),
       todos: sheetTodos.map((t) => ({ id: t.id, text: t.text, checked: t.checked })),
       createdBy: memberId,
