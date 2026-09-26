@@ -4980,7 +4980,7 @@ export async function mountIdentityView(container) {
       await claimMember(currentTripId, memberId, uid);
       setBoundMemberId(currentTripId, memberId);
       setState({ currentMemberId: memberId });
-      window.location.hash = "#/app/schedule";
+      gotoRoute("#/app/schedule", currentTripId);
     });
   });
 
@@ -5011,7 +5011,7 @@ export async function mountIdentityView(container) {
     });
     setBoundMemberId(currentTripId, memberId);
     setState({ currentMemberId: memberId });
-    window.location.hash = "#/app/schedule";
+    gotoRoute("#/app/schedule", currentTripId);
   });
 }
 // views/tripList.js
@@ -5085,7 +5085,7 @@ export async function mountTripListView(container) {
     card.addEventListener("click", () => {
       const tripId = card.dataset.tripId;
       setState({ currentTripId: tripId, currentMemberId: getBoundMemberId(tripId) });
-      window.location.hash = "#/app/schedule";
+      gotoRoute("#/app/schedule", tripId);
     });
   });
 
@@ -5100,7 +5100,7 @@ export async function mountTripListView(container) {
   });
 
   container.querySelector("#btnCreateTrip").addEventListener("click", () => {
-    window.location.hash = "#/wizard";
+    gotoRoute("#/wizard", null);
   });
 }
 // views/tripWizard.js
@@ -5387,7 +5387,7 @@ export function mountTripWizardView(container) {
 
     setBoundMemberId(tripId, hostMemberId);
     setState({ currentTripId: tripId, currentMemberId: hostMemberId });
-    window.location.hash = "#/app/schedule";
+    gotoRoute("#/app/schedule", tripId);
   }
 
   btnNext.addEventListener("click", () => {
@@ -5531,7 +5531,7 @@ export async function mountTripSettingsView(container) {
   const isHost = !!me?.isHost;
 
   container.querySelector("#btnSettingsBack").addEventListener("click", () => {
-    window.location.hash = "#/app/schedule";
+    gotoRoute("#/app/schedule", currentTripId);
   });
 
   if (!trip) {
@@ -5806,7 +5806,7 @@ export async function mountTripSettingsView(container) {
     renderBody();
     if (newStatus === "archived") {
       alert("已封存，回到「我的旅程」可以在已封存分頁看到它。");
-      window.location.hash = "#/trips";
+      gotoRoute("#/trips", null);
     }
   }
 
@@ -5820,7 +5820,7 @@ export async function mountTripSettingsView(container) {
     try {
       await deleteTripCompletely(currentTripId, uid);
       alert("已刪除這趟旅程。");
-      window.location.hash = "#/trips";
+      gotoRoute("#/trips", null);
     } catch (err) {
       console.error("[刪除旅程失敗]", err);
       alert("刪除失敗：" + (err.message || err.code || "未知錯誤"));
@@ -6441,7 +6441,7 @@ async function renderAppShell(tabKey) {
 
   if (!currentTripId) {
     // 沒有目前的旅程可看，導回旅程列表（主揪）或提示錯誤（旅伴不該走到這裡）
-    window.location.hash = "#/trips";
+    gotoRoute("#/trips", null);
     return;
   }
 
@@ -6480,11 +6480,11 @@ async function renderAppShell(tabKey) {
     `;
 
     bindTripHeaderEvents(root, {
-      onSwitchTrip: () => { window.location.hash = "#/trips"; },
-      onOpenSettings: () => { window.location.hash = "#/settings"; },
-      onOpenMembers: () => { window.location.hash = "#/app/members"; },
+      onSwitchTrip: () => { gotoRoute("#/trips", null); },
+      onOpenSettings: () => { gotoRoute("#/settings", currentTripId); },
+      onOpenMembers: () => { gotoRoute("#/app/members", currentTripId); },
     });
-    bindBottomNavEvents(root, (key) => { window.location.hash = `#/app/${key}`; });
+    bindBottomNavEvents(root, (key) => { gotoRoute(`#/app/${key}`, currentTripId); });
     mountPinModal(root);
 
     activeTabCleanup?.();
@@ -6515,33 +6515,70 @@ async function renderStandalone(view) {
   await view.mount?.(root);
 }
 
+/* ==================== 路由小工具 ====================
+ * 原本 App 內部換分頁只會改 hash 的路徑（例如 #/app/schedule），
+ * 旅程 id 只活在記憶體裡的 currentTripId，不會反映在網址上。
+ * 這樣主揪自己在同一台裝置上操作沒問題，但只要把當下網址列複製給
+ * 別的裝置（例如自己從電腦複製到手機），對方打開會因為網址裡根本
+ * 沒有旅程 id，直接被導回旅程列表，看不到原本在看的那趟旅程。
+ *
+ * 修法：內部換分頁一律把目前的 tripId 一起寫進 hash（用 ?trip= 帶在
+ * hash 後面），並且進站解析路由時，只要網址上有帶 tripId 就優先採用。
+ * 這樣不管是邀請連結、還是單純複製當下網址列給別的裝置，都能對到
+ * 同一趟旅程。舊格式的邀請連結（tripId 放在 hash 前面的 query string）
+ * 仍然照舊支援，不受影響。
+ */
+function parseHash() {
+  const raw = window.location.hash || "#/trips";
+  const [path, queryStr] = raw.split("?");
+  const query = new URLSearchParams(queryStr || "");
+  return { path, tripId: query.get("trip") };
+}
+
+function gotoRoute(path, tripId) {
+  const { currentTripId } = getState();
+  const id = tripId !== undefined ? tripId : currentTripId;
+  window.location.hash = id ? `${path}?trip=${id}` : path;
+}
+
 export async function handleRouteChange() {
-  const hash = window.location.hash || "#/trips";
+  const { path, tripId } = parseHash();
   stopListeners();
 
-  if (hash === "#/identity") {
+  if (tripId) {
+    // 網址本身就帶了旅程 id（邀請連結，或單純是複製了當下的網址列給別的裝置），
+    // 優先採用網址上的這個 id，這樣才能保證「複製網址給別人 / 別的裝置」永遠有效。
+    const boundMemberId = getBoundMemberId(tripId);
+    setState({ currentTripId: tripId, currentMemberId: boundMemberId });
+    if (!boundMemberId && path !== "#/identity") {
+      gotoRoute("#/identity", tripId);
+      return;
+    }
+  }
+
+  if (path === "#/identity") {
     await renderStandalone({ render: renderIdentityView, mount: mountIdentityView });
     return;
   }
-  if (hash === "#/trips") {
+  if (path === "#/trips") {
     await renderStandalone({ render: renderTripListView, mount: mountTripListView });
     return;
   }
-  if (hash === "#/wizard") {
+  if (path === "#/wizard") {
     await renderStandalone({ render: renderTripWizardView, mount: mountTripWizardView });
     return;
   }
-  if (hash === "#/settings") {
+  if (path === "#/settings") {
     await renderStandalone({ render: renderTripSettingsView, mount: mountTripSettingsView });
     return;
   }
-  const appMatch = hash.match(/^#\/app\/(\w+)/);
+  const appMatch = path.match(/^#\/app\/(\w+)/);
   if (appMatch) {
     await renderAppShell(appMatch[1]);
     return;
   }
 
-  window.location.hash = "#/trips";
+  gotoRoute("#/trips");
 }
 
 window.addEventListener("hashchange", handleRouteChange);
@@ -6565,13 +6602,14 @@ async function boot() {
   if (inviteTripId) {
     const boundMemberId = getBoundMemberId(inviteTripId);
     setState({ currentTripId: inviteTripId, currentMemberId: boundMemberId });
-    window.location.hash = boundMemberId ? "#/app/schedule" : "#/identity";
+    gotoRoute(boundMemberId ? "#/app/schedule" : "#/identity", inviteTripId);
   } else if (!window.location.hash || window.location.hash === "#/") {
-    window.location.hash = "#/trips";
+    gotoRoute("#/trips", null);
   }
 
   handleRouteChange();
 }
+
 
 boot();
   </script>
