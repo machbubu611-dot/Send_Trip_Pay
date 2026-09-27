@@ -3222,7 +3222,13 @@ export function mountBookingsView(container, ctx) {
 
   const hotelsListEl = container.querySelector("#hotelsList");
   cleanups.push(
-    listenHotels(tripId, (hotels) => {
+    listenHotels(tripId, (hotelsRaw) => {
+      // 依最快入住日期排序，日期相同再比入住時間
+      const hotels = [...hotelsRaw].sort((a, b) => {
+        const aKey = `${a.checkIn?.date || ""} ${a.checkIn?.time || ""}`;
+        const bKey = `${b.checkIn?.date || ""} ${b.checkIn?.time || ""}`;
+        return aKey.localeCompare(bKey);
+      });
       hotelsListEl.innerHTML = hotels
         .map((h) => {
           const checkedCount = (h.splitMemberIds || []).length || 1;
