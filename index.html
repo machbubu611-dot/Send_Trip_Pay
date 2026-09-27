@@ -1123,6 +1123,30 @@ export async function markFriendActive(hostUid, friendId) {
   await updateDoc(doc(db, "users", hostUid, "friends", friendId), { status: "active", token: null });
 }
 
+/**
+ * 重新產生一組新的一次性邀請連結（給還沒點過連結、狀態還是 pending 的朋友用）。
+ * 做法：用還留著的舊權杖，在 secondaryAuth（跟主揪自己的登入狀態互不影響）
+ * 上簽入那位朋友的帳號一次，馬上把密碼換成一組全新的權杖，再登出——
+ * 不需要 Firebase Admin SDK 就能做到「重設密碼」，因為舊權杖本來就存在
+ * Firestore 裡，主揪讀得到。
+ *
+ * 只對還沒啟用（status 還是 pending）的朋友有效：一旦朋友自己設定過密碼，
+ * 這裡存的舊權杖就已經失效，重新產生連結這個功能就不適用了
+ * （這種情況要處理的是「忘記密碼」，是另一個之後可以再做的功能）。
+ * @returns {Promise<string>} 新的一次性權杖
+ */
+export async function regenerateFriendToken(hostUid, friendId, email, oldToken) {
+  const newToken = cryptoRandomToken() + cryptoRandomToken();
+  try {
+    const cred = await signInWithEmailAndPassword(secondaryAuth, email, oldToken);
+    await updatePassword(cred.user, newToken);
+  } finally {
+    await signOut(secondaryAuth).catch(() => {});
+  }
+  await updateDoc(doc(db, "users", hostUid, "friends", friendId), { token: newToken });
+  return newToken;
+}
+
 /* ---------- trips/{tripId} ---------- */
 
 export async function getTrip(tripId) {
@@ -5466,6 +5490,9 @@ export function renderCircleView() {
           <button class="btn btn-outline" id="btnCancelFriend">取消</button>
           <button class="btn btn-primary primary-weight" id="btnSaveFriend">儲存</button>
         </div>
+        <button class="btn-dashed" id="btnRegenLink" style="display:none; margin-bottom:10px;">
+          <i class="fa-solid fa-rotate"></i> 重新產生邀請連結
+        </button>
         <button class="btn-danger-text" id="btnRemoveFriend" style="display:none;">
           <i class="fa-solid fa-user-minus"></i> 從朋友圈移除
         </button>
@@ -5564,6 +5591,7 @@ export async function mountCircleView(container) {
     selectedAvatar = AVATAR_EMOJI_LIBRARY[0];
     avatarGrid.querySelectorAll(".a-opt").forEach((o) => o.classList.toggle("selected", o.dataset.emoji === selectedAvatar));
     container.querySelector("#btnRemoveFriend").style.display = "none";
+    container.querySelector("#btnRegenLink").style.display = "none";
     friendSheet.classList.add("show");
   }
 
@@ -5578,8 +5606,30 @@ export async function mountCircleView(container) {
     selectedAvatar = f.avatarValue;
     avatarGrid.querySelectorAll(".a-opt").forEach((o) => o.classList.toggle("selected", o.dataset.emoji === selectedAvatar));
     container.querySelector("#btnRemoveFriend").style.display = "block";
+    container.querySelector("#btnRegenLink").style.display = f.status === "pending" ? "block" : "none";
     friendSheet.classList.add("show");
   }
+
+  container.querySelector("#btnRegenLink").addEventListener("click", async () => {
+    const f = friends.find((x) => x.id === editingFriendId);
+    if (!f) return;
+    const btn = container.querySelector("#btnRegenLink");
+    btn.disabled = true;
+    btn.textContent = "產生中…";
+    try {
+      const newToken = await regenerateFriendToken(uid, f.id, f.email, f.token);
+      friendSheet.classList.remove("show");
+      const link = `${window.location.origin}${window.location.pathname}?friendClaim=1&fh=${uid}&fid=${f.id}&email=${encodeURIComponent(f.email)}&token=${newToken}`;
+      inviteLinkText.textContent = link;
+      inviteSheet.classList.add("show");
+    } catch (err) {
+      console.error("[重新產生邀請連結失敗]", err);
+      alert("產生失敗，請檢查網路連線後再試一次。");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<i class="fa-solid fa-rotate"></i> 重新產生邀請連結`;
+    }
+  });
 
   container.querySelector("#btnAddFriend").addEventListener("click", openAddFriend);
   container.querySelector("#btnCancelFriend").addEventListener("click", () => friendSheet.classList.remove("show"));
