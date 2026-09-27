@@ -862,7 +862,17 @@ button, input, textarea {
 .ic-people{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .wish-card .ic-main{ display: block; }
 .wish-loc{ font-size: 11.5px; color: var(--sage-dark); margin-top: 4px; display: flex; align-items: center; gap: 5px; }
-.wish-adopted-tag{ background: var(--sage-light); color: var(--sage-dark); }
+.wish-card{ position: relative; overflow: hidden; }
+.wish-stamp{
+  position: absolute; top: 16px; right: -34px; width: 150px;
+  border: 2.5px solid var(--danger); border-radius: 6px;
+  color: var(--danger); font-family: var(--font-heading); font-weight: 700;
+  font-size: 12.5px; letter-spacing: 3px; text-align: center; padding: 3px 0;
+  transform: rotate(20deg); opacity: 0.85; pointer-events: none;
+}
+.wish-stamp::after{
+  content: ""; position: absolute; inset: 3px; border: 1px solid var(--danger); border-radius: 3px;
+}
 .btn-adopt-wish{ margin-top: 10px; width: 100%; font-size: 12px; padding: 8px; border-radius: 12px; background: var(--earth); color: var(--white); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
 .btn-adopt-wish:active{ transform: scale(0.97); }
 .ic-person-chip{ font-size: 11px; padding: 4px 10px; border-radius: 10px; background: var(--cream-dark); color: var(--ink-soft); cursor: pointer; display: flex; align-items: center; gap: 4px; border: 1px solid transparent; }
@@ -1711,6 +1721,22 @@ export async function togglePlanningCompletion(tripId, itemId, memberId, complet
   await updateDoc(doc(db, "trips", tripId, "planningItems", itemId), {
     completedBy: completed ? arrayUnion(memberId) : arrayRemove(memberId),
   });
+}
+
+/**
+ * 行程被刪掉時，如果這則行程當初是從某個「許願」項目採用建立的，
+ * 要把那個許願項目打回「尚未採用」，不然畫面上會一直掛著「已採用」的章印，
+ * 但實際上對應的行程已經不存在了。
+ * @param {string} tripId
+ * @param {string} eventId
+ */
+export async function revertWishlistAdoptionsForEvent(tripId, eventId) {
+  const q = query(collection(db, "trips", tripId, "planningItems"), where("adoptedEventId", "==", eventId));
+  const snap = await getDocs(q);
+  if (snap.empty) return;
+  const batch = writeBatch(db);
+  snap.docs.forEach((d) => batch.update(d.ref, { status: "pending", adoptedEventId: null }));
+  await batch.commit();
 }
 // utils.js
 // 共用小工具，跟特定分頁無關的邏輯放這裡。
@@ -5002,9 +5028,9 @@ export function mountPlanningView(container, ctx) {
           const adopted = it.status === "adopted";
           return `
             <div class="item-card wish-card" data-item-id="${it.id}">
+              ${adopted ? `<div class="wish-stamp">已 採 用</div>` : ""}
               <div class="ic-tags">
                 <span class="ic-tag">${submitter?.name || "?"} 提議</span>
-                ${adopted ? `<span class="ic-tag wish-adopted-tag"><i class="fa-solid fa-check"></i> 已加入行程</span>` : ""}
               </div>
               <div class="ic-main" data-open-detail="${it.id}">
                 <div class="ic-title">${it.title || "（未命名）"} ${hasExtra ? `<i class="fa-solid ${it.photoUrls?.length ? "fa-image" : "fa-note-sticky"} ic-more-icon" title="有更多內容"></i>` : ""}</div>
@@ -7586,6 +7612,7 @@ export function mountScheduleView(container, ctx) {
   deleteBtn.addEventListener("click", async () => {
     if (!editingEventId) return;
     if (!confirm("確定要刪除這則行程嗎？")) return;
+    await revertWishlistAdoptionsForEvent(tripId, editingEventId);
     await deleteScheduleEvent(tripId, editingEventId);
     closeSheet();
   });
