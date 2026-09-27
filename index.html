@@ -540,6 +540,8 @@ button, input, textarea {
 .t-card .t-title{ font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
 .t-nav-icon{ display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--sage-light); color: var(--sage-dark); font-size: 11px; cursor: pointer; flex: 0 0 auto; }
 .t-nav-icon:active{ transform: scale(0.9); }
+.t-loc-name{ font-size: 12px; color: var(--sage-dark); margin-top: 4px; display: inline-flex; align-items: center; gap: 6px; width: auto; height: auto; border-radius: 22px; padding: 4px 10px; }
+.t-loc-name i{ font-size: 11px; }
 .t-note{ margin-top: 7px; font-size: 11px; color: var(--warn); background: var(--warn-bg); padding: 4px 9px; border-radius: 8px; display: flex; align-items: center; gap: 5px; }
 .t-note span{ white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
 
@@ -2035,17 +2037,67 @@ function localISODate(d) {
 }
 
 /**
+ * 從「完整版」Google 地圖網址裡，直接解析出地點名稱——純字串解析，不打任何
+ * 網路請求，所以不會有 CORS 的問題。網址長這樣的話會抓得到：
+ *   https://www.google.com/maps/place/小豆島國際飯店/@34.48,134.32,17z/...
+ *   https://www.google.com/maps?q=小豆島國際飯店
+ *
+ * 抓不到的情況（這是已知限制，不是 bug）：
+ *   https://maps.app.goo.gl/xxxx 這種「短網址」——它本身只是一個轉址代碼，
+ *   實際地點名稱要等瀏覽器真的打開它、跳轉之後才看得到，而這個轉址過程
+ *   純前端沒辦法讀到結果（跨網域限制，讀不到轉址後的網址內容）。
+ *   遇到短網址的話，請使用者自己在瀏覽器打開一次那個短網址，
+ *   再把「跳轉後、網址列變長的那個網址」複製貼過來，就抓得到了。
+ * @param {string} url
+ * @returns {string|null}
+ */
+function extractPlaceNameFromMapsUrl(url) {
+  if (!url) return null;
+  let u;
+  try {
+    u = new URL(url);
+  } catch {
+    return null;
+  }
+  const placeMatch = u.pathname.match(/\/maps\/place\/([^/]+)/);
+  if (placeMatch) {
+    try {
+      return decodeURIComponent(placeMatch[1].replace(/\+/g, " "));
+    } catch {
+      return placeMatch[1];
+    }
+  }
+  const q = u.searchParams.get("q");
+  if (q && !/^-?\d+(\.\d+)?,-?\d+(\.\d+)?$/.test(q.trim())) {
+    return q.trim();
+  }
+  return null;
+}
+
+/**
  * 幫「Google 地圖連結」輸入框接上「一鍵導航」按鈕的共用邏輯：
  * 輸入框有值就把按鈕點亮，點下去直接在新分頁開啟那個連結——單純幫使用者少一步
- * 「複製網址→切到 Google 地圖 App→貼上」的手動流程，不做任何解析或驗證連結內容
- * （Google 地圖的短網址 maps.app.goo.gl 需要伺服器端才能解析出實際店家/座標，
- * 純前端做不到，所以這裡就是單純存起來、單純開啟，不嘗試從連結反推地址或座標）。
+ * 「複製網址→切到 Google 地圖 App→貼上」的手動流程。
+ * 如果有給 nameHintEl，會順便嘗試從網址解析出地點名稱、即時顯示給使用者看，
+ * 抓不到的話會顯示「短網址沒辦法自動判斷地點名稱」的提示。
  * @param {HTMLInputElement} input
  * @param {HTMLButtonElement} button
+ * @param {HTMLElement} [nameHintEl]
  */
-function wireMapsLinkButton(input, button) {
+function wireMapsLinkButton(input, button, nameHintEl) {
   function refresh() {
     button.disabled = !input.value.trim();
+    if (!nameHintEl) return;
+    const url = input.value.trim();
+    if (!url) {
+      nameHintEl.textContent = "";
+      return;
+    }
+    const name = extractPlaceNameFromMapsUrl(url);
+    nameHintEl.textContent = name
+      ? `已抓到地點名稱：${name}`
+      : "這是短網址，沒辦法自動判斷地點名稱——可以先在瀏覽器打開一次，複製跳轉後變長的網址再貼過來";
+    nameHintEl.style.color = name ? "var(--ok)" : "var(--ink-soft)";
   }
   input.addEventListener("input", refresh);
   refresh();
@@ -2061,13 +2113,16 @@ function wireMapsLinkButton(input, button) {
 }
 
 /**
- * 把「Google 地圖連結」欄位的值併進地點物件裡再存檔。
+ * 把「Google 地圖連結」欄位的值併進地點物件裡再存檔，順便嘗試解析出地點名稱
+ * （placeName）存起來，畫面上才有現成的名稱可以顯示，不用每次都重新解析。
  * 空字串就不寫這個欄位，避免 Firestore 存一堆沒意義的空字串。
  */
 function withMapsUrl(locationObj, mapsUrlRaw) {
   const url = (mapsUrlRaw || "").trim();
   const base = locationObj || {};
-  return url ? { ...base, googleMapsUrl: url } : base;
+  if (!url) return base;
+  const placeName = extractPlaceNameFromMapsUrl(url);
+  return placeName ? { ...base, googleMapsUrl: url, placeName } : { ...base, googleMapsUrl: url };
 }
 
 /* ==================== 共用表情符號資料庫（頭像 / 封面） ====================
@@ -2540,6 +2595,7 @@ export function renderBookingsView() {
           <input type="text" class="text-input" id="fHotelMapsUrl" placeholder="貼上 https://maps.app.goo.gl/... 分享連結">
           <button class="btn maps-nav-btn" id="btnOpenHotelMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
         </div>
+        <p class="field-hint" id="hotelMapsNameHint"></p>
         <label class="field-label">總金額（TWD）</label>
         <input type="number" class="text-input" id="fHotelTotal" placeholder="例如：9600">
         <label class="field-label">當晚入住成員 <span style="font-weight:400;color:var(--ink-soft);">· 用來計算每人分攤</span></label>
@@ -2576,6 +2632,7 @@ export function renderBookingsView() {
           <input type="text" class="text-input" id="fPickupMapsUrl" placeholder="貼上取車地點的 Google 地圖連結（選填）">
           <button class="btn maps-nav-btn" id="btnOpenPickupMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
         </div>
+        <p class="field-hint" id="pickupMapsNameHint"></p>
         <label class="field-label">還車</label>
         <div class="time-row">
           <div><input type="date" class="text-input" id="fDropoffDate"></div>
@@ -2590,6 +2647,7 @@ export function renderBookingsView() {
           <input type="text" class="text-input" id="fDropoffMapsUrl" placeholder="貼上還車地點的 Google 地圖連結（選填）">
           <button class="btn maps-nav-btn" id="btnOpenDropoffMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
         </div>
+        <p class="field-hint" id="dropoffMapsNameHint"></p>
         <label class="field-label">費用（TWD） <span style="font-weight:400;color:var(--ink-soft);">· 選填</span></label>
         <input type="number" class="text-input" id="fCarCost" placeholder="例如：4500">
         <div id="carSplitWrap" style="display:none;">
@@ -2908,7 +2966,7 @@ export function mountBookingsView(container, ctx) {
   const hotelAddrInput = container.querySelector("#fHotelAddress");
   const hotelVerifyStatus = container.querySelector("#hotelVerifyStatus");
   const hotelSaveBtn = container.querySelector("#btnSaveHotel");
-  wireMapsLinkButton(container.querySelector("#fHotelMapsUrl"), container.querySelector("#btnOpenHotelMaps"));
+  wireMapsLinkButton(container.querySelector("#fHotelMapsUrl"), container.querySelector("#btnOpenHotelMaps"), container.querySelector("#hotelMapsNameHint"));
 
   function updateHotelSaveBtn() {
     hotelSaveBtn.disabled = !hotelLocVerified;
@@ -3155,8 +3213,8 @@ export function mountBookingsView(container, ctx) {
   const pickupVerifyStatus = container.querySelector("#pickupVerifyStatus");
   const dropoffVerifyStatus = container.querySelector("#dropoffVerifyStatus");
   const carSaveBtn = container.querySelector("#btnSaveCar");
-  wireMapsLinkButton(container.querySelector("#fPickupMapsUrl"), container.querySelector("#btnOpenPickupMaps"));
-  wireMapsLinkButton(container.querySelector("#fDropoffMapsUrl"), container.querySelector("#btnOpenDropoffMaps"));
+  wireMapsLinkButton(container.querySelector("#fPickupMapsUrl"), container.querySelector("#btnOpenPickupMaps"), container.querySelector("#pickupMapsNameHint"));
+  wireMapsLinkButton(container.querySelector("#fDropoffMapsUrl"), container.querySelector("#btnOpenDropoffMaps"), container.querySelector("#dropoffMapsNameHint"));
 
   function updateCarSaveBtn() {
     const ok = carPickupVerified && carDropoffVerified;
@@ -6639,6 +6697,7 @@ export function renderScheduleView() {
           <input type="text" class="text-input" id="fieldMapsUrl" placeholder="貼上 Google 地圖連結">
           <button class="btn maps-nav-btn" id="btnOpenFieldMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
         </div>
+        <p class="field-hint" id="fieldMapsNameHint"></p>
 
         <label class="field-label">待辦事項 <span style="font-weight:400;color:var(--ink-soft);">· 純備忘</span></label>
         <div class="todo-list" id="todoList"></div>
@@ -6686,7 +6745,7 @@ export function mountScheduleView(container, ctx) {
   const fieldTime = container.querySelector("#fieldTime");
   const fieldTitle = container.querySelector("#fieldTitle");
   const fieldMapsUrl = container.querySelector("#fieldMapsUrl");
-  wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"));
+  wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"), container.querySelector("#fieldMapsNameHint"));
   const todoListEl = container.querySelector("#todoList");
   const fieldNote = container.querySelector("#fieldNote");
   const saveBtn = container.querySelector("#btnSaveEvent");
@@ -6788,7 +6847,8 @@ export function mountScheduleView(container, ctx) {
             <div class="t-time">${e.time || ""}</div>
             <div class="t-card">
               <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>
-              <div class="t-title">${e.title || "（未命名）"}${e.location?.googleMapsUrl ? `<span class="t-nav-icon" data-nav-url="${e.location.googleMapsUrl}" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></span>` : ""}</div>
+              <div class="t-title">${e.title || "（未命名）"}</div>
+              ${e.location?.googleMapsUrl ? `<div class="t-loc-name t-nav-icon" data-nav-url="${e.location.googleMapsUrl}"><i class="fa-solid fa-location-arrow"></i>${e.location?.placeName || "在 Google 地圖開啟"}</div>` : ""}
               ${e.note ? `<div class="t-note"><i class="fa-solid fa-triangle-exclamation"></i><span>${truncate(e.note, 20)}</span></div>` : ""}
             </div>
           </div>
