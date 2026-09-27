@@ -529,6 +529,10 @@ button, input, textarea {
 .wc-fetch-note{ font-size: 9.5px; opacity: 0.75; text-align: right; margin-top: 4px; }
 
 .section-label{ padding: 0 0 10px; font-size: 13px; color: var(--ink-soft); font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.section-label-row{ display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.section-label-row .section-label{ padding: 0; flex: 1; min-width: 0; }
+.btn-swap-days{ font-size: 11.5px; color: var(--sage-dark); background: var(--sage-light); border-radius: 12px; padding: 6px 10px; display: flex; align-items: center; gap: 5px; cursor: pointer; flex: 0 0 auto; white-space: nowrap; }
+.btn-swap-days:active{ transform: scale(0.95); }
 
 .timeline{ padding-bottom: 4px; }
 .t-item{ display: flex; gap: 10px; margin-bottom: 12px; align-items: stretch; }
@@ -1447,6 +1451,33 @@ export async function reorderScheduleEvents(tripId, updates) {
     batch.update(doc(db, "trips", tripId, "schedule", id), { order, updatedAt: serverTimestamp() });
   });
   await batch.commit();
+}
+
+/**
+ * 把兩個日期的整天行程直接對調（例如因為天氣考量，想把兩天的排程互換）。
+ * 做法：把 dateA 那天的所有事件的 date 改成 dateB，dateB 那天的改成 dateA，
+ * 時間、待辦、地點等其他欄位都原封不動——單純只是換了「哪一天要做這些事」。
+ * @param {string} tripId
+ * @param {string} dateA
+ * @param {string} dateB
+ * @returns {Promise<number>} 實際被對調的事件筆數
+ */
+export async function swapScheduleDays(tripId, dateA, dateB) {
+  const snap = await getDocs(collection(db, "trips", tripId, "schedule"));
+  const batch = writeBatch(db);
+  let touched = 0;
+  snap.docs.forEach((d) => {
+    const date = d.data().date;
+    if (date === dateA) {
+      batch.update(d.ref, { date: dateB, updatedAt: serverTimestamp() });
+      touched++;
+    } else if (date === dateB) {
+      batch.update(d.ref, { date: dateA, updatedAt: serverTimestamp() });
+      touched++;
+    }
+  });
+  if (touched > 0) await batch.commit();
+  return touched;
 }
 
 /* ---------- trips/{tripId}/hotels（行程頁「住宿」快選用） ---------- */
@@ -6667,10 +6698,29 @@ export function renderScheduleView() {
         <div class="wc-fetch-note" id="wcNote">資料來源：Open-Meteo</div>
       </div>
 
-      <div class="section-label"><i class="fa-solid fa-route"></i> <span id="sectionLabelText">今日行程</span> · 可拖曳調整順序</div>
+      <div class="section-label-row">
+        <div class="section-label"><i class="fa-solid fa-route"></i> <span id="sectionLabelText">今日行程</span> · 可拖曳調整順序</div>
+        <button class="btn-swap-days" id="btnSwapDays" title="交換兩天行程"><i class="fa-solid fa-right-left"></i> 交換兩天</button>
+      </div>
       <div class="timeline" id="timeline"></div>
 
       <button class="btn-dashed" id="btnAddEvent"><i class="fa-solid fa-plus"></i> 新增這天的行程</button>
+    </div>
+
+    <div class="sheet-overlay" id="swapDaysOverlay">
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h3 class="sheet-title">交換兩天行程</h3>
+        <p class="field-hint">整天的行程會互相對調，時間、地點、待辦都會一起帶過去，只是換了日期。</p>
+        <label class="field-label">第一天</label>
+        <select class="text-input" id="swapDayA"></select>
+        <label class="field-label">第二天</label>
+        <select class="text-input" id="swapDayB"></select>
+        <div class="btn-row">
+          <button class="btn btn-outline" id="btnCancelSwapDays">取消</button>
+          <button class="btn btn-primary primary-weight" id="btnConfirmSwapDays"><i class="fa-solid fa-right-left"></i> 對調</button>
+        </div>
+      </div>
     </div>
 
     <div class="sheet-overlay" id="eventSheetOverlay">
@@ -7052,6 +7102,60 @@ export function mountScheduleView(container, ctx) {
   container.querySelector("#btnAddEvent").addEventListener("click", openAddSheet);
   sheetOverlay.addEventListener("click", (e) => {
     if (e.target === sheetOverlay) closeSheet();
+  });
+
+  /* ---------- 交換兩天行程 ---------- */
+  const swapOverlay = container.querySelector("#swapDaysOverlay");
+  const swapDayASelect = container.querySelector("#swapDayA");
+  const swapDayBSelect = container.querySelector("#swapDayB");
+
+  function dayOptionLabel(dateStr) {
+    return `${formatMD(dateStr)}（${weekdayLabel(dateStr)}）${dateStr === todayStr ? " · 今天" : ""}`;
+  }
+
+  container.querySelector("#btnSwapDays").addEventListener("click", () => {
+    if (days.length < 2) {
+      alert("這趟旅程只有一天，沒有別的日期可以對調。");
+      return;
+    }
+    const optionsHtml = days.map((d) => `<option value="${d}">${dayOptionLabel(d)}</option>`).join("");
+    swapDayASelect.innerHTML = optionsHtml;
+    swapDayBSelect.innerHTML = optionsHtml;
+    swapDayASelect.value = selectedDate || days[0];
+    const otherDay = days.find((d) => d !== swapDayASelect.value) || days[1];
+    swapDayBSelect.value = otherDay;
+    swapOverlay.classList.add("show");
+  });
+  container.querySelector("#btnCancelSwapDays").addEventListener("click", () => swapOverlay.classList.remove("show"));
+  swapOverlay.addEventListener("click", (e) => { if (e.target === swapOverlay) swapOverlay.classList.remove("show"); });
+
+  container.querySelector("#btnConfirmSwapDays").addEventListener("click", async () => {
+    const dayA = swapDayASelect.value;
+    const dayB = swapDayBSelect.value;
+    if (dayA === dayB) {
+      alert("要對調的兩天不能選一樣的日期喔");
+      return;
+    }
+    const btn = container.querySelector("#btnConfirmSwapDays");
+    btn.disabled = true;
+    btn.textContent = "對調中…";
+    try {
+      const touched = await swapScheduleDays(tripId, dayA, dayB);
+      swapOverlay.classList.remove("show");
+      // 如果原本選的那天剛好是被對調的其中一天，畫面跟著換過去，比較不會跳來跳去
+      if (selectedDate === dayA) selectedDate = dayB;
+      else if (selectedDate === dayB) selectedDate = dayA;
+      renderDateScroll();
+      renderTimeline();
+      updateWeatherCard(selectedDate);
+      alert(touched > 0 ? `已對調 ${dayOptionLabel(dayA)} 跟 ${dayOptionLabel(dayB)} 的行程（共 ${touched} 筆）。` : "這兩天原本都沒有行程，沒有東西需要對調。");
+    } catch (err) {
+      console.error("[交換兩天行程失敗]", err);
+      alert("對調失敗，請檢查網路連線後再試一次。");
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = `<i class="fa-solid fa-right-left"></i> 對調`;
+    }
   });
 
   deleteBtn.addEventListener("click", async () => {
