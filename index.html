@@ -375,6 +375,7 @@ button, input, textarea {
 }
 .m-info{ flex: 1; }
 .m-name{ font-size: 15px; font-weight: 500; }
+.m-sub{ font-size: 11.5px; color: var(--ink-soft); margin-top: 2px; }
 .m-role{ font-size: 12px; color: var(--ink-soft); margin-top: 2px; }
 .m-role.host{ color: var(--earth-dark); font-weight: 500; }
 .m-edit-icon{ color: var(--sage-dark); font-size: 16px; }
@@ -460,6 +461,9 @@ button, input, textarea {
 .trip-list-view{ padding: 24px 22px 100px; }
 .tl-header h1{ font-size: 20px; }
 .tl-header .sub{ display: block; font-size: 12px; color: var(--ink-soft); font-weight: 400; margin-top: 2px; font-family: var(--font-body); }
+.tl-header{ display: flex; align-items: flex-start; justify-content: space-between; }
+.btn-circle-entry{ width: 40px; height: 40px; border-radius: 50%; background: var(--sage-light); color: var(--sage-dark); display: flex; align-items: center; justify-content: center; font-size: 16px; flex: 0 0 auto; cursor: pointer; }
+.btn-circle-entry:active{ transform: scale(0.94); }
 .seg-tabs{ display: flex; gap: 8px; margin: 16px 0 14px; }
 .seg-tab{ padding: 8px 18px; border-radius: 14px; font-size: 13px; font-weight: 500; cursor: pointer; background: var(--white); color: var(--ink-soft); box-shadow: var(--shadow-sm); }
 .seg-tab.active{ background: var(--sage); color: var(--white); box-shadow: 2px 2px 0 var(--sage-dark); }
@@ -882,6 +886,10 @@ import {
   getAuth,
   signInAnonymously,
   onAuthStateChanged,
+  createUserWithEmailAndPassword,
+  signInWithEmailAndPassword,
+  updatePassword,
+  signOut,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
 // state.js
@@ -958,6 +966,15 @@ export const db = getFirestore(app);
 export const storage = getStorage(app);
 export const auth = getAuth(app);
 
+/* 第二個獨立的 Firebase App 實例，專門用來「主揪幫朋友建立帳號」這件事。
+ * Firebase 的瀏覽器端 SDK，只要呼叫 createUserWithEmailAndPassword，
+ * 就會自動把當下的登入狀態切換成那個新帳號——如果直接用上面 auth 這個
+ * 主要的登入狀態去建立朋友的帳號，主揪自己就會被登出、換成朋友的身份。
+ * 開一個完全獨立的 App 實例（各自有自己的一份登入狀態，互不影響），
+ * 建完帳號後就把這個實例的登入狀態登出丟掉，不會動到主揪自己的 auth。 */
+const secondaryApp = initializeApp(firebaseConfig, "secondary");
+export const secondaryAuth = getAuth(secondaryApp);
+
 // 離線持久化：手機網路不穩時，Firestore 讀寫先落地在本機，恢復連線後自動同步
 enableIndexedDbPersistence(db).catch((err) => {
   if (err.code === "failed-precondition") {
@@ -1020,6 +1037,90 @@ export async function addOwnedTrip(uid, tripId) {
   } else {
     await setDoc(ref, { ownedTrips: [tripId] });
   }
+}
+
+/**
+ * 查「這個 uid 是哪些旅程的成員」（不限主揪）——真帳號的旅伴要能自己看到
+ * 被拉進去的旅程，得靠這個查詢，不能只靠 ownedTrips（那個只記主揪自己開的旅程）。
+ * @returns {Promise<string[]>} tripId 陣列
+ */
+export async function getMemberTripIds(uid) {
+  const q = query(collection(db, "trips"), where("memberUids", "array-contains", uid));
+  const snap = await getDocs(q);
+  return snap.docs.map((d) => d.id);
+}
+
+/* ---------- users/{hostUid}/friends：主揪自己的「泰迪宇宙」朋友圈 ---------- */
+
+export function listenFriends(hostUid, callback, onError) {
+  return onSnapshot(
+    collection(db, "users", hostUid, "friends"),
+    (snap) => callback(snap.docs.map((d) => ({ id: d.id, ...d.data() }))),
+    (error) => {
+      console.error("[listenFriends]", error);
+      onError?.(error);
+    }
+  );
+}
+
+/**
+ * 新增一位朋友：用一個獨立的 Firebase App 實例（secondaryAuth）幫她建立帳號，
+ * 密碼是一組隨機產生、只能用一次的權杖，不會影響主揪自己目前的登入狀態。
+ * 建好帳號後，把朋友資料（email、預設名字、預設大頭貼、對應的帳號 uid、
+ * 這組一次性權杖）存進主揪自己的朋友圈清單裡。
+ * @returns {Promise<{friendId:string, token:string}>}
+ */
+export async function createFriend(hostUid, { email, name, avatarValue }) {
+  const token = cryptoRandomToken() + cryptoRandomToken(); // 拉長一點，反正只用一次
+  let linkedUid;
+  try {
+    const cred = await createUserWithEmailAndPassword(secondaryAuth, email, token);
+    linkedUid = cred.user.uid;
+  } finally {
+    // 不管成功失敗，都把這個獨立實例的登入狀態清掉，避免殘留
+    await signOut(secondaryAuth).catch(() => {});
+  }
+
+  const ref = await addDoc(collection(db, "users", hostUid, "friends"), {
+    email,
+    name,
+    avatarType: "library",
+    avatarValue,
+    linkedUid,
+    status: "pending", // pending：還沒點連結設定密碼；active：已經設定過密碼、正式啟用
+    token,
+    createdAt: serverTimestamp(),
+  });
+  return { friendId: ref.id, token };
+}
+
+export async function updateFriend(hostUid, friendId, payload) {
+  await updateDoc(doc(db, "users", hostUid, "friends", friendId), payload);
+}
+
+export async function deleteFriend(hostUid, friendId) {
+  // 只刪朋友圈裡的這筆紀錄，不會刪掉她本人的帳號——如果她已經在某趟旅程裡，
+  // 帳號還是要留著，不然那趟旅程會找不到人。
+  await deleteDoc(doc(db, "users", hostUid, "friends", friendId));
+}
+
+/**
+ * 朋友點開邀請連結後的「認領帳號」流程：用主揪當初設的一次性權杖先登入一次
+ * （這一步用的是一般的 auth，因為現在操作的人是朋友自己的裝置，不是主揪），
+ * 登入成功後緊接著就把密碼換成她自己設定的新密碼，這組一次性權杖就不能再用了。
+ * @returns {Promise<import("firebase/auth").User>}
+ */
+export async function claimFriendAccount(email, token, newPassword) {
+  const cred = await signInWithEmailAndPassword(auth, email, token);
+  await updatePassword(cred.user, newPassword);
+  return cred.user;
+}
+
+export async function markFriendActive(hostUid, friendId) {
+  // 這一步是朋友自己的帳號在寫，不是主揪——Security Rules 那邊要另外開一個
+  // 「resource.data.linkedUid == request.auth.uid」的例外，朋友才能更新
+  // 自己在主揪朋友圈裡的這一筆紀錄的 status。
+  await updateDoc(doc(db, "users", hostUid, "friends", friendId), { status: "active", token: null });
 }
 
 /* ---------- trips/{tripId} ---------- */
@@ -4782,8 +4883,20 @@ export function renderMembersView() {
   return `
     <div class="members-view">
       <div id="memberList"></div>
-      <button class="btn-dashed" id="btnAddMember"><i class="fa-solid fa-plus"></i> 新增旅伴</button>
+      <div class="btn-row" style="gap:8px;">
+        <button class="btn-dashed" id="btnAddFromCircle" style="flex:1;"><i class="fa-solid fa-user-group"></i> 從泰迪宇宙加入</button>
+        <button class="btn-dashed" id="btnAddMember" style="flex:1;"><i class="fa-solid fa-plus"></i> 手動新增</button>
+      </div>
       <p class="section-note">所有旅伴的操作權限相同，僅主揪可以新增或移除成員。</p>
+    </div>
+
+    <div class="sheet-overlay" id="circlePickerOverlay">
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h3 class="sheet-title">從泰迪宇宙加入</h3>
+        <div id="circlePickerList"></div>
+        <button class="btn btn-outline" id="btnCloseCirclePicker" style="width:100%;margin-top:8px;">關閉</button>
+      </div>
     </div>
 
     <div class="sheet-overlay" id="memberSheetOverlay">
@@ -4831,10 +4944,80 @@ export function renderMembersView() {
 
 export function mountMembersView(container, ctx) {
   const { tripId, isHost, members } = ctx;
+  const { uid } = getState();
 
   const listEl = container.querySelector("#memberList");
   const addBtn = container.querySelector("#btnAddMember");
+  const circleBtn = container.querySelector("#btnAddFromCircle");
   addBtn.style.display = isHost ? "flex" : "none";
+  circleBtn.style.display = isHost ? "flex" : "none";
+
+  const circlePicker = container.querySelector("#circlePickerOverlay");
+  const circlePickerList = container.querySelector("#circlePickerList");
+  circleBtn.addEventListener("click", async () => {
+    circlePickerList.innerHTML = `<div class="spinner"></div>`;
+    circlePicker.classList.add("show");
+    let friends = [];
+    try {
+      friends = await new Promise((resolve, reject) => {
+        const unsub = listenFriends(
+          uid,
+          (data) => { unsub(); resolve(data); },
+          (err) => { unsub(); reject(err); }
+        );
+      });
+    } catch (err) {
+      circlePickerList.innerHTML = `<p style="text-align:center;color:var(--warn);padding:20px 0;">讀取朋友圈失敗，請檢查網路連線</p>`;
+      return;
+    }
+    const alreadyInIds = new Set(members.flatMap((m) => m.boundUids || []));
+    if (!friends.length) {
+      circlePickerList.innerHTML = `<p style="text-align:center;color:var(--ink-soft);padding:20px 0;">你的泰迪宇宙還沒有朋友，先去「我的旅程」列表右上角新增朋友吧</p>`;
+      return;
+    }
+    circlePickerList.innerHTML = friends
+      .map((f) => {
+        const already = alreadyInIds.has(f.linkedUid);
+        return `
+          <div class="member-card ${already ? "" : "circle-pick-opt"}" data-friend-id="${f.id}" style="${already ? "opacity:0.5;" : "cursor:pointer;"}">
+            <div class="m-avatar" style="background:var(--sage-light);">${f.avatarValue}</div>
+            <div class="m-info">
+              <div class="m-name">${f.name}</div>
+              <div class="m-sub">${already ? "已經在這趟旅程裡" : f.status === "active" ? "已啟用" : "尚未設定密碼"}</div>
+            </div>
+          </div>
+        `;
+      })
+      .join("");
+    circlePickerList.querySelectorAll(".circle-pick-opt").forEach((el) => {
+      el.addEventListener("click", async () => {
+        const friend = friends.find((f) => f.id === el.dataset.friendId);
+        if (!friend) return;
+        el.style.pointerEvents = "none";
+        el.style.opacity = "0.5";
+        try {
+          await addDoc(collection(db, "trips", tripId, "members"), {
+            name: friend.name,
+            avatarType: "library",
+            avatarValue: friend.avatarValue,
+            isHost: false,
+            boundUids: [friend.linkedUid],
+            removed: false,
+            joinedAt: serverTimestamp(),
+          });
+          await updateTrip(tripId, { memberUids: arrayUnion(friend.linkedUid) });
+          circlePicker.classList.remove("show");
+        } catch (err) {
+          console.error("[從泰迪宇宙加入成員失敗]", err);
+          alert("加入失敗，請檢查網路連線後再試一次。");
+          el.style.pointerEvents = "";
+          el.style.opacity = "1";
+        }
+      });
+    });
+  });
+  container.querySelector("#btnCloseCirclePicker").addEventListener("click", () => circlePicker.classList.remove("show"));
+  circlePicker.addEventListener("click", (e) => { if (e.target === circlePicker) circlePicker.classList.remove("show"); });
 
   function renderList() {
     listEl.innerHTML = members
@@ -5159,6 +5342,7 @@ export function renderTripListView() {
     <div class="trip-list-view">
       <div class="tl-header">
         <h1>我的旅程<span class="sub">哈囉 👋</span></h1>
+        <div class="btn-circle-entry" id="btnOpenCircle" title="泰迪宇宙"><i class="fa-solid fa-user-group"></i></div>
       </div>
 
       <div class="seg-tabs">
@@ -5200,7 +5384,9 @@ function tripCardHtml(trip) {
 export async function mountTripListView(container) {
   const { uid } = getState();
 
-  const tripIds = await getOwnedTripIds(uid);
+  const ownedIds = await getOwnedTripIds(uid);
+  const memberIds = await getMemberTripIds(uid);
+  const tripIds = Array.from(new Set([...ownedIds, ...memberIds]));
   const trips = await getTripsByIds(tripIds);
   const ongoing = trips.filter((t) => t.status !== "archived");
   const archived = trips.filter((t) => t.status === "archived");
@@ -5237,8 +5423,330 @@ export async function mountTripListView(container) {
   container.querySelector("#btnCreateTrip").addEventListener("click", () => {
     gotoRoute("#/wizard", null);
   });
+  container.querySelector("#btnOpenCircle").addEventListener("click", () => {
+    gotoRoute("#/circle", null);
+  });
 }
-// views/tripWizard.js
+// views/circle.js
+// 泰迪宇宙：主揪自己的朋友圈通訊錄。
+//   - 新增朋友：填 email/名字/大頭貼，系統用獨立的 secondaryAuth 幫她建好帳號，
+//     密碼是一組隨機一次性權杖，產生一條邀請連結給主揪去分享。
+//   - 朋友點開連結（走 #/claim 那條路，不在這個檔案裡）用權杖登入一次、
+//     自己設定正式密碼，之後就是這個朋友圈裡一個「已啟用」的真帳號。
+//   - 開旅程挑成員時，直接從這份朋友圈勾人，不用再走「邀請連結→自己認領」。
+
+export function renderCircleView() {
+  return `
+    <div class="trip-list-view">
+      <div class="tl-header">
+        <h1>泰迪宇宙<span class="sub">你的旅伴通訊錄</span></h1>
+        <div class="btn-circle-entry" id="btnCircleBack" title="返回"><i class="fa-solid fa-arrow-left"></i></div>
+      </div>
+
+      <div class="tl-list" id="circleList"></div>
+
+      <button class="btn btn-primary tl-fab" id="btnAddFriend">
+        <i class="fa-solid fa-user-plus"></i> 新增朋友
+      </button>
+    </div>
+
+    <div class="sheet-overlay" id="friendSheetOverlay">
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h3 class="sheet-title" id="friendSheetTitle">新增朋友</h3>
+        <label class="field-label">Email <span style="font-weight:400;color:var(--ink-soft);">· 之後就是她登入用的帳號</span></label>
+        <input type="email" class="text-input" id="fFriendEmail" placeholder="friend@example.com">
+        <label class="field-label">預設名字</label>
+        <input type="text" class="text-input" id="fFriendName" placeholder="輸入名字">
+        <label class="field-label">預設大頭貼</label>
+        <div class="lib-grid" id="friendAvatarGrid">
+          ${AVATAR_EMOJI_LIBRARY.map((e) => `<div class="a-opt" data-emoji="${e}">${e}</div>`).join("")}
+        </div>
+        <div class="sheet-btn-row">
+          <button class="btn btn-outline" id="btnCancelFriend">取消</button>
+          <button class="btn btn-primary primary-weight" id="btnSaveFriend">儲存</button>
+        </div>
+        <button class="btn-danger-text" id="btnRemoveFriend" style="display:none;">
+          <i class="fa-solid fa-user-minus"></i> 從朋友圈移除
+        </button>
+      </div>
+    </div>
+
+    <div class="sheet-overlay" id="friendInviteOverlay">
+      <div class="sheet" style="text-align:center;">
+        <div class="sheet-handle"></div>
+        <h3 class="sheet-title">邀請連結準備好了</h3>
+        <p class="field-hint">傳這條連結給她（例如用 LINE），她點開後會直接完成帳號設定，第一次只需要自己設一組密碼：</p>
+        <div class="text-input" id="friendInviteLinkText" style="word-break:break-all; height:auto; padding:12px; margin-bottom:16px; user-select:all;"></div>
+        <div class="btn-row">
+          <button class="btn btn-outline" id="btnCloseFriendInvite">關閉</button>
+          <button class="btn btn-primary primary-weight" id="btnCopyFriendInvite"><i class="fa-solid fa-copy"></i> 複製連結</button>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function friendCardHtml(f) {
+  const statusLabel = f.status === "active" ? "已啟用" : "尚未設定密碼";
+  const statusColor = f.status === "active" ? "var(--ok)" : "var(--warn)";
+  return `
+    <div class="trip-card friend-card" data-friend-id="${f.id}">
+      <div class="trip-top">
+        <div class="trip-cover-lg">${f.avatarValue}</div>
+        <div style="flex:1;">
+          <div class="trip-name">${f.name}</div>
+          <div class="trip-date">${f.email}</div>
+        </div>
+      </div>
+      <div class="trip-bottom">
+        <span style="font-size:11px;color:${statusColor};">${statusLabel}</span>
+        <i class="fa-solid fa-chevron-right" style="color:var(--sage-dark);"></i>
+      </div>
+    </div>
+  `;
+}
+
+export async function mountCircleView(container) {
+  const { uid } = getState();
+  const listEl = container.querySelector("#circleList");
+  const friendSheet = container.querySelector("#friendSheetOverlay");
+  const inviteSheet = container.querySelector("#friendInviteOverlay");
+  const emailInput = container.querySelector("#fFriendEmail");
+  const nameInput = container.querySelector("#fFriendName");
+  const avatarGrid = container.querySelector("#friendAvatarGrid");
+  const inviteLinkText = container.querySelector("#friendInviteLinkText");
+
+  let friends = [];
+  let editingFriendId = null;
+  let selectedAvatar = AVATAR_EMOJI_LIBRARY[0];
+
+  function renderList() {
+    listEl.innerHTML = friends.length
+      ? friends.map(friendCardHtml).join("")
+      : `<p style="text-align:center;color:var(--ink-soft);padding:30px 0;">還沒有朋友，點下面「新增朋友」開始建立你的泰迪宇宙吧</p>`;
+    listEl.querySelectorAll(".friend-card").forEach((card) => {
+      card.addEventListener("click", () => openEditFriend(card.dataset.friendId));
+    });
+  }
+
+  const unsubscribe = listenFriends(
+    uid,
+    (data) => {
+      friends = data;
+      renderList();
+    },
+    (error) => {
+      listEl.innerHTML = `
+        <div style="background:var(--warn-bg); border:2px solid var(--warn); border-radius:16px; padding:14px; font-size:12.5px; color:var(--ink);">
+          <b>朋友圈讀取失敗</b><br>
+          請按 F12 打開瀏覽器 Console，找到紅色錯誤訊息裡的索引建立連結，點下去建立後重新整理。<br>
+          <span style="font-size:11px;color:var(--ink-soft);">錯誤代碼：${error.code || "unknown"}</span>
+        </div>
+      `;
+    }
+  );
+
+  avatarGrid.querySelectorAll(".a-opt").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      avatarGrid.querySelectorAll(".a-opt").forEach((o) => o.classList.remove("selected"));
+      opt.classList.add("selected");
+      selectedAvatar = opt.dataset.emoji;
+    });
+  });
+
+  function openAddFriend() {
+    editingFriendId = null;
+    container.querySelector("#friendSheetTitle").textContent = "新增朋友";
+    emailInput.value = "";
+    emailInput.disabled = false;
+    nameInput.value = "";
+    selectedAvatar = AVATAR_EMOJI_LIBRARY[0];
+    avatarGrid.querySelectorAll(".a-opt").forEach((o) => o.classList.toggle("selected", o.dataset.emoji === selectedAvatar));
+    container.querySelector("#btnRemoveFriend").style.display = "none";
+    friendSheet.classList.add("show");
+  }
+
+  function openEditFriend(friendId) {
+    const f = friends.find((x) => x.id === friendId);
+    if (!f) return;
+    editingFriendId = friendId;
+    container.querySelector("#friendSheetTitle").textContent = "編輯朋友";
+    emailInput.value = f.email;
+    emailInput.disabled = true; // email 綁定了帳號，建立後不能改
+    nameInput.value = f.name;
+    selectedAvatar = f.avatarValue;
+    avatarGrid.querySelectorAll(".a-opt").forEach((o) => o.classList.toggle("selected", o.dataset.emoji === selectedAvatar));
+    container.querySelector("#btnRemoveFriend").style.display = "block";
+    friendSheet.classList.add("show");
+  }
+
+  container.querySelector("#btnAddFriend").addEventListener("click", openAddFriend);
+  container.querySelector("#btnCancelFriend").addEventListener("click", () => friendSheet.classList.remove("show"));
+  friendSheet.addEventListener("click", (e) => { if (e.target === friendSheet) friendSheet.classList.remove("show"); });
+
+  container.querySelector("#btnSaveFriend").addEventListener("click", async () => {
+    const email = emailInput.value.trim();
+    const name = nameInput.value.trim();
+    if (!email || !name) {
+      alert("Email 跟名字都要填喔");
+      return;
+    }
+    const saveBtn = container.querySelector("#btnSaveFriend");
+    saveBtn.disabled = true;
+    saveBtn.textContent = "處理中…";
+    try {
+      if (editingFriendId) {
+        await updateFriend(uid, editingFriendId, { name, avatarValue: selectedAvatar });
+        friendSheet.classList.remove("show");
+      } else {
+        const { friendId, token } = await createFriend(uid, { email, name, avatarValue: selectedAvatar });
+        friendSheet.classList.remove("show");
+        const link = `${window.location.origin}${window.location.pathname}?friendClaim=1&fh=${uid}&fid=${friendId}&email=${encodeURIComponent(email)}&token=${token}`;
+        inviteLinkText.textContent = link;
+        inviteSheet.classList.add("show");
+      }
+    } catch (err) {
+      console.error("[新增/編輯朋友失敗]", err);
+      if (err.code === "auth/email-already-in-use") {
+        alert("這個 email 已經被用過了（可能已經是別人朋友圈裡的帳號），換一個 email 試試。");
+      } else {
+        alert("儲存失敗，請檢查網路連線後再試一次。");
+      }
+    } finally {
+      saveBtn.disabled = false;
+      saveBtn.textContent = "儲存";
+    }
+  });
+
+  container.querySelector("#btnRemoveFriend").addEventListener("click", async () => {
+    if (!editingFriendId) return;
+    if (!confirm("確定要把她從朋友圈移除嗎？她原本已經加入的旅程不會受影響，只是之後開新旅程不會再看到她。")) return;
+    await deleteFriend(uid, editingFriendId);
+    friendSheet.classList.remove("show");
+  });
+
+  container.querySelector("#btnCloseFriendInvite").addEventListener("click", () => inviteSheet.classList.remove("show"));
+  container.querySelector("#btnCopyFriendInvite").addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(inviteLinkText.textContent);
+      alert("已複製，貼給她吧！");
+    } catch {
+      alert("複製失敗，麻煩手動選取上面的連結文字複製。");
+    }
+  });
+
+  container.querySelector("#btnCircleBack").addEventListener("click", () => {
+    gotoRoute("#/trips", null);
+  });
+
+  return () => unsubscribe();
+}
+
+// views/claim.js
+// 朋友點開「泰迪宇宙」邀請連結後看到的畫面：用一次性權杖登入一次、
+// 自己設定正式密碼。如果不是透過連結進來（沒有 pendingClaim），
+// 就顯示一般的「用信箱密碼登入」表單——這是給已經設定過密碼的人，
+// 換裝置或換瀏覽器時，重新登入回自己帳號用的入口。
+export function renderClaimView() {
+  const { pendingClaim } = getState();
+  if (pendingClaim) {
+    return `
+      <div class="identity-view">
+        <h1>設定你的密碼</h1>
+        <p class="sub">這是你第一次使用，設定一組自己的密碼之後，以後在任何裝置上都可以用信箱＋這組密碼登入。</p>
+        <label class="field-label" style="text-align:left;">新密碼 <span style="font-weight:400;color:var(--ink-soft);">· 至少 6 碼</span></label>
+        <input type="password" class="text-input" id="claimNewPassword" placeholder="設定密碼">
+        <label class="field-label" style="text-align:left;">再輸入一次</label>
+        <input type="password" class="text-input" id="claimConfirmPassword" placeholder="確認密碼">
+        <div id="claimError" style="color:var(--warn); font-size:12.5px; margin-bottom:10px; display:none;"></div>
+        <button class="btn btn-primary primary-weight" id="btnClaimSubmit" style="width:100%;">設定完成，開始使用</button>
+      </div>
+    `;
+  }
+  return `
+    <div class="identity-view">
+      <h1>登入</h1>
+      <p class="sub">用主揪幫你設定的信箱和你自己的密碼登入</p>
+      <label class="field-label" style="text-align:left;">Email</label>
+      <input type="email" class="text-input" id="loginEmail" placeholder="你的信箱" autocomplete="username">
+      <label class="field-label" style="text-align:left;">密碼</label>
+      <input type="password" class="text-input" id="loginPassword" placeholder="密碼" autocomplete="current-password">
+      <div id="claimError" style="color:var(--warn); font-size:12.5px; margin-bottom:10px; display:none;"></div>
+      <button class="btn btn-primary primary-weight" id="btnLoginSubmit" style="width:100%;">登入</button>
+    </div>
+  `;
+}
+
+export async function mountClaimView(container) {
+  const { pendingClaim } = getState();
+  const errorEl = container.querySelector("#claimError");
+
+  function showError(msg) {
+    errorEl.textContent = msg;
+    errorEl.style.display = "block";
+  }
+
+  if (pendingClaim) {
+    container.querySelector("#btnClaimSubmit").addEventListener("click", async () => {
+      const pw = container.querySelector("#claimNewPassword").value;
+      const confirmPw = container.querySelector("#claimConfirmPassword").value;
+      errorEl.style.display = "none";
+      if (pw.length < 6) {
+        showError("密碼至少要 6 碼");
+        return;
+      }
+      if (pw !== confirmPw) {
+        showError("兩次輸入的密碼不一樣");
+        return;
+      }
+      const btn = container.querySelector("#btnClaimSubmit");
+      btn.disabled = true;
+      btn.textContent = "處理中…";
+      try {
+        await claimFriendAccount(pendingClaim.email, pendingClaim.token, pw);
+        await markFriendActive(pendingClaim.hostUid, pendingClaim.friendId);
+        setState({ uid: auth.currentUser.uid, pendingClaim: null });
+        alert("設定完成！之後可以直接用這組信箱密碼登入。");
+        gotoRoute("#/trips", null);
+      } catch (err) {
+        console.error("[認領帳號失敗]", err);
+        if (err.code === "auth/invalid-credential" || err.code === "auth/wrong-password") {
+          showError("這條連結已經用過、或已經失效了。如果你之前已經設定過密碼，請改用登入頁用信箱密碼登入；不然麻煩請主揪重新發一次邀請連結。");
+        } else {
+          showError("設定失敗，請檢查網路連線後再試一次。");
+        }
+        btn.disabled = false;
+        btn.textContent = "設定完成，開始使用";
+      }
+    });
+  } else {
+    container.querySelector("#btnLoginSubmit").addEventListener("click", async () => {
+      const email = container.querySelector("#loginEmail").value.trim();
+      const password = container.querySelector("#loginPassword").value;
+      errorEl.style.display = "none";
+      if (!email || !password) {
+        showError("信箱跟密碼都要填");
+        return;
+      }
+      const btn = container.querySelector("#btnLoginSubmit");
+      btn.disabled = true;
+      btn.textContent = "登入中…";
+      try {
+        const cred = await signInWithEmailAndPassword(auth, email, password);
+        setState({ uid: cred.user.uid });
+        gotoRoute("#/trips", null);
+      } catch (err) {
+        console.error("[登入失敗]", err);
+        showError("信箱或密碼不對，請再確認一次。");
+        btn.disabled = false;
+        btn.textContent = "登入";
+      }
+    });
+  }
+}
+
+
 // 開團 Wizard：主揪建立新行程的入口。4 步驟：
 //   1. 主題（含封面 emoji）
 //   2. 日期
@@ -6694,6 +7202,14 @@ export async function handleRouteChange() {
     await renderStandalone({ render: renderTripListView, mount: mountTripListView });
     return;
   }
+  if (path === "#/circle") {
+    await renderStandalone({ render: renderCircleView, mount: mountCircleView });
+    return;
+  }
+  if (path === "#/claim") {
+    await renderStandalone({ render: renderClaimView, mount: mountClaimView });
+    return;
+  }
   if (path === "#/wizard") {
     await renderStandalone({ render: renderTripWizardView, mount: mountTripWizardView });
     return;
@@ -6739,8 +7255,19 @@ async function boot() {
 
   const params = new URLSearchParams(window.location.search);
   const inviteTripId = params.get("trip");
+  const friendClaim = params.get("friendClaim");
 
-  if (inviteTripId) {
+  if (friendClaim) {
+    setState({
+      pendingClaim: {
+        hostUid: params.get("fh"),
+        friendId: params.get("fid"),
+        email: params.get("email"),
+        token: params.get("token"),
+      },
+    });
+    gotoRoute("#/claim", null);
+  } else if (inviteTripId) {
     const boundMemberId = getBoundMemberId(inviteTripId);
     setState({ currentTripId: inviteTripId, currentMemberId: boundMemberId });
     gotoRoute(boundMemberId ? "#/app/schedule" : "#/identity", inviteTripId);
