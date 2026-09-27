@@ -476,6 +476,9 @@ button, input, textarea {
 .trip-date{ font-size: 12px; color: var(--ink-soft); margin-top: 3px; }
 .trip-bottom{ display: flex; justify-content: space-between; align-items: center; }
 .tl-fab{ position: fixed; bottom: 24px; left: 22px; right: 22px; max-width: 436px; margin: 0 auto; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.account-upgrade-card{ background: var(--warn-bg); border: 2px solid var(--warn); border-radius: 16px; padding: 12px 14px; margin-bottom: 14px; font-size: 12.5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.account-upgrade-card.is-ok{ background: var(--sage-light); border-color: var(--sage); }
+.account-upgrade-card button{ flex: 0 0 auto; font-size: 11.5px; padding: 6px 12px; }
 
 /* ===== 開團 Wizard ===== */
 .wizard-view{ display: flex; flex-direction: column; min-height: calc(100vh - 0px); }
@@ -896,6 +899,8 @@ import {
   signInWithEmailAndPassword,
   updatePassword,
   signOut,
+  EmailAuthProvider,
+  linkWithCredential,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
 // state.js
@@ -1151,6 +1156,20 @@ export async function regenerateFriendToken(hostUid, friendId, email, oldToken) 
   }
   await updateDoc(doc(db, "users", hostUid, "friends", friendId), { token: newToken });
   return newToken;
+}
+
+/**
+ * 把主揪自己現在這個匿名帳號「升級」成有 email+密碼的正式帳號——
+ * uid 完全不變，所以名下的旅程、泰迪宇宙朋友圈都還是同一份資料，不用搬家。
+ * 這是為了解決 iOS「加入主畫面」給的是一個全新匿名身份、資料對不起來的問題：
+ * 升級成真帳號之後，不管在哪個瀏覽環境，只要用這組 email+密碼登入
+ * （走 #/claim 那個登入畫面），都會拿回同一個 uid，資料自然就一致了。
+ * @returns {Promise<import("firebase/auth").User>}
+ */
+export async function upgradeToEmailAccount(email, password) {
+  const credential = EmailAuthProvider.credential(email, password);
+  const result = await linkWithCredential(auth.currentUser, credential);
+  return result.user;
 }
 
 /* ---------- trips/{tripId} ---------- */
@@ -5556,6 +5575,8 @@ export function renderCircleView() {
         <div class="btn-circle-entry" id="btnCircleBack" title="返回"><i class="fa-solid fa-arrow-left"></i></div>
       </div>
 
+      <div class="account-upgrade-card" id="accountUpgradeCard"></div>
+
       <div class="tl-list" id="circleList"></div>
 
       <button class="btn btn-primary tl-fab" id="btnAddFriend">
@@ -5600,6 +5621,23 @@ export function renderCircleView() {
         </div>
       </div>
     </div>
+
+    <div class="sheet-overlay" id="accountUpgradeOverlay">
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h3 class="sheet-title">設定你自己的登入帳號</h3>
+        <p class="field-hint">設定之後，之後在任何裝置（包含手機加入主畫面的獨立瀏覽環境）都可以用這組信箱密碼登入回同一個身份，旅程跟泰迪宇宙都會是同一份資料，不用擔心資料對不起來。</p>
+        <label class="field-label">Email</label>
+        <input type="email" class="text-input" id="upgradeEmail" placeholder="你的信箱" autocomplete="username">
+        <label class="field-label">密碼 <span style="font-weight:400;color:var(--ink-soft);">· 至少 6 碼</span></label>
+        <input type="password" class="text-input" id="upgradePassword" placeholder="設定密碼" autocomplete="new-password">
+        <div id="upgradeError" style="color:var(--warn); font-size:12.5px; margin-bottom:10px; display:none;"></div>
+        <div class="btn-row">
+          <button class="btn btn-outline" id="btnCancelUpgrade">取消</button>
+          <button class="btn btn-primary primary-weight" id="btnConfirmUpgrade">設定完成</button>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -5632,6 +5670,60 @@ export async function mountCircleView(container) {
   const nameInput = container.querySelector("#fFriendName");
   const avatarGrid = container.querySelector("#friendAvatarGrid");
   const inviteLinkText = container.querySelector("#friendInviteLinkText");
+
+  /* ---------- 帳號升級提示（匿名帳號 → email+密碼正式帳號） ----------
+   * 這是為了解決 iOS「加入主畫面」給的是全新匿名身份、看不到泰迪宇宙資料的問題。
+   * 升級後 uid 不變，是「同一個人」多了一種登入方式，不是換帳號、不用搬資料。 */
+  const upgradeCard = container.querySelector("#accountUpgradeCard");
+  const upgradeSheet = container.querySelector("#accountUpgradeOverlay");
+  const isAnonymous = auth.currentUser?.isAnonymous !== false; // 保守起見，讀不到就當作還沒升級
+  if (isAnonymous) {
+    upgradeCard.className = "account-upgrade-card";
+    upgradeCard.innerHTML = `
+      <div><b>還沒設定登入帳號</b><br>設定後才能在手機加入主畫面等獨立環境裡看到這份朋友圈</div>
+      <button class="btn btn-primary primary-weight" id="btnOpenUpgrade">設定</button>
+    `;
+    container.querySelector("#btnOpenUpgrade").addEventListener("click", () => upgradeSheet.classList.add("show"));
+  } else {
+    upgradeCard.className = "account-upgrade-card is-ok";
+    upgradeCard.innerHTML = `<div><b>已設定登入帳號</b><br>${auth.currentUser.email}</div>`;
+  }
+  container.querySelector("#btnCancelUpgrade").addEventListener("click", () => upgradeSheet.classList.remove("show"));
+  upgradeSheet.addEventListener("click", (e) => { if (e.target === upgradeSheet) upgradeSheet.classList.remove("show"); });
+  container.querySelector("#btnConfirmUpgrade").addEventListener("click", async () => {
+    const email = container.querySelector("#upgradeEmail").value.trim();
+    const password = container.querySelector("#upgradePassword").value;
+    const errorEl = container.querySelector("#upgradeError");
+    errorEl.style.display = "none";
+    if (!email || password.length < 6) {
+      errorEl.textContent = "信箱要填、密碼至少 6 碼";
+      errorEl.style.display = "block";
+      return;
+    }
+    const btn = container.querySelector("#btnConfirmUpgrade");
+    btn.disabled = true;
+    btn.textContent = "設定中…";
+    try {
+      await upgradeToEmailAccount(email, password);
+      upgradeSheet.classList.remove("show");
+      alert("設定完成！之後在任何裝置都可以用這組信箱密碼登入（走「泰迪宇宙」朋友點的那種登入畫面）。");
+      upgradeCard.className = "account-upgrade-card is-ok";
+      upgradeCard.innerHTML = `<div><b>已設定登入帳號</b><br>${email}</div>`;
+    } catch (err) {
+      console.error("[帳號升級失敗]", err);
+      if (err.code === "auth/email-already-in-use") {
+        errorEl.textContent = "這個信箱已經被用過了，換一個試試。";
+      } else if (err.code === "auth/weak-password") {
+        errorEl.textContent = "密碼太簡單，換一組再試試。";
+      } else {
+        errorEl.textContent = "設定失敗，請檢查網路連線後再試一次。";
+      }
+      errorEl.style.display = "block";
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "設定完成";
+    }
+  });
 
   let friends = [];
   let editingFriendId = null;
