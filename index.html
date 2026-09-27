@@ -749,6 +749,9 @@ button, input, textarea {
 .split-opt{ padding: 7px 12px; border-radius: 12px; background: var(--white); color: var(--ink-soft); font-size: 12px; cursor: pointer; border: 2px solid var(--sage-light); display: flex; align-items: center; gap: 6px; }
 .split-opt.selected{ background: var(--sage-light); border-color: var(--sage-dark); color: var(--sage-dark); font-weight: 500; }
 .split-note{ font-size: 10.5px; color: var(--ink-soft); margin-bottom: 16px; }
+.private-expense-row{ display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--ink); background: var(--cream); border-radius: 12px; padding: 10px 12px; margin: -6px 0 16px; cursor: pointer; }
+.private-expense-row input{ flex: 0 0 auto; width: 16px; height: 16px; }
+.private-expense-row i{ color: var(--earth-dark); }
 
 .settle-summary{ display: flex; gap: 10px; margin-bottom: 18px; }
 .settle-person{ flex: 1; background: var(--white); border-radius: 16px; padding: 12px 10px; text-align: center; box-shadow: var(--shadow-sm); min-width: 0; }
@@ -3696,6 +3699,11 @@ export function renderExpenseView() {
         <div class="split-row" id="expenseSplitRow"></div>
         <p class="split-note">預設全員均分，點選可取消排除</p>
 
+        <label class="private-expense-row" id="expensePrivateRow" style="display:none;">
+          <input type="checkbox" id="expensePrivateToggle">
+          <span><i class="fa-solid fa-lock"></i> 隱藏這筆消費（只有你自己看得到，主揪也看不到；仍會算進你的個人結算）</span>
+        </label>
+
         <div class="btn-row">
           <button class="btn btn-danger-outline" id="btnDeleteExpense" style="display:none;">刪除</button>
           <button class="btn btn-outline" id="btnCancelExpense">取消</button>
@@ -3781,10 +3789,17 @@ export function mountExpenseView(container, ctx) {
   });
 
   /* ---------- 明細渲染 ---------- */
+  function visibleExpenses() {
+    // 標成「隱藏」的個人消費，只有本人自己看得到；其他人（含主揪）在這裡一律看不到，
+    // 但本人自己的「個人結算」明細（openMyExpenseSheet）另外算，不受這個過濾影響。
+    return expenses.filter((e) => !e.private || e.paidBy === memberId);
+  }
+
   function renderDashboardAndList() {
-    const totalTWD = expenses.reduce((s, e) => s + (e.amountTWD || 0), 0);
+    const shown = visibleExpenses();
+    const totalTWD = shown.reduce((s, e) => s + (e.amountTWD || 0), 0);
     const foreignTotals = {};
-    expenses.forEach((e) => {
+    shown.forEach((e) => {
       if (e.currency && e.currency !== "TWD") {
         foreignTotals[e.currency] = (foreignTotals[e.currency] || 0) + (e.amount || 0);
       }
@@ -3800,14 +3815,14 @@ export function mountExpenseView(container, ctx) {
       </div>
       <div class="dash-per-person">
         ${members.map((m) => {
-          const paid = expenses.filter((e) => e.paidBy === m.id).reduce((s, e) => s + (e.amountTWD || 0), 0);
+          const paid = shown.filter((e) => e.paidBy === m.id).reduce((s, e) => s + (e.amountTWD || 0), 0);
           return `<div class="dpp-item"><div class="dpp-name">${avatarInlinePrefix(m)}${m.name}</div><div class="dpp-val">NT$ ${paid.toLocaleString()}</div></div>`;
         }).join("")}
       </div>
     `;
 
     const listEl = container.querySelector("#expenseList");
-    const sorted = [...expenses].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+    const sorted = [...shown].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
     const groups = {};
     sorted.forEach((e) => {
       (groups[e.date || "未填日期"] = groups[e.date || "未填日期"] || []).push(e);
@@ -3953,6 +3968,14 @@ export function mountExpenseView(container, ctx) {
   container.querySelector("#btnAddCurrency").addEventListener("click", () => currencyPicker.classList.add("show"));
   container.querySelector("#btnCloseCurrencyPicker").addEventListener("click", () => currencyPicker.classList.remove("show"));
 
+  function updatePrivateToggleVisibility() {
+    const split = getSelectedSplit();
+    const eligible = selectedPayer === memberId && split.length === 1 && split[0] === memberId;
+    const row = container.querySelector("#expensePrivateRow");
+    row.style.display = eligible ? "flex" : "none";
+    if (!eligible) container.querySelector("#expensePrivateToggle").checked = false;
+  }
+
   function renderPayerAndSplitRows(splitAmongIds) {
     const payerRow = container.querySelector("#payerRow");
     payerRow.innerHTML = members
@@ -3963,6 +3986,7 @@ export function mountExpenseView(container, ctx) {
         selectedPayer = opt.dataset.memberId;
         payerRow.querySelectorAll(".payer-opt").forEach((o) => o.classList.remove("selected"));
         opt.classList.add("selected");
+        updatePrivateToggleVisibility();
       });
     });
 
@@ -3972,8 +3996,12 @@ export function mountExpenseView(container, ctx) {
       .map((m) => `<div class="split-opt ${checked.includes(m.id) ? "selected" : ""}" data-member-id="${m.id}">${avatarInlinePrefix(m)}${m.name}</div>`)
       .join("");
     splitRow.querySelectorAll(".split-opt").forEach((opt) => {
-      opt.addEventListener("click", () => opt.classList.toggle("selected"));
+      opt.addEventListener("click", () => {
+        opt.classList.toggle("selected");
+        updatePrivateToggleVisibility();
+      });
     });
+    updatePrivateToggleVisibility();
   }
   function getSelectedSplit() {
     return [...container.querySelectorAll("#expenseSplitRow .split-opt.selected")].map((el) => el.dataset.memberId);
@@ -4047,6 +4075,7 @@ export function mountExpenseView(container, ctx) {
       catOpt.style.color = "var(--white)";
     }
     renderPayerAndSplitRows(e.splitAmong);
+    if (e.private) container.querySelector("#expensePrivateToggle").checked = true;
     sheet.classList.add("show");
   }
   container.querySelector("#btnAddExpense").addEventListener("click", openAddExpense);
@@ -4072,6 +4101,7 @@ export function mountExpenseView(container, ctx) {
     const amount = Number(amountStr) || 0;
     const rate = currentCurrency === "TWD" ? null : liveRates[currentCurrency] || 1;
     const amountTWD = currentCurrency === "TWD" ? amount : Math.round(amount / rate);
+    const isPrivateEligible = selectedPayer === memberId && splitAmong.length === 1 && splitAmong[0] === memberId;
     const payload = {
       title,
       category: selectedCategory,
@@ -4082,6 +4112,7 @@ export function mountExpenseView(container, ctx) {
       paidBy: selectedPayer,
       splitAmong,
       date: container.querySelector("#fExpenseDate").value,
+      private: isPrivateEligible && container.querySelector("#expensePrivateToggle").checked,
     };
     try {
       if (editingExpenseId) await updateExpense(tripId, editingExpenseId, payload);
@@ -4097,7 +4128,7 @@ export function mountExpenseView(container, ctx) {
   function computeSettlement() {
     const net = {};
     members.forEach((m) => (net[m.id] = 0));
-    expenses.forEach((e) => {
+    visibleExpenses().forEach((e) => {
       if (net[e.paidBy] !== undefined) net[e.paidBy] += e.amountTWD || 0;
       const share = (e.amountTWD || 0) / (e.splitAmong?.length || 1);
       (e.splitAmong || []).forEach((id) => {
