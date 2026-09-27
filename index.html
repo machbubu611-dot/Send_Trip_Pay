@@ -7085,7 +7085,9 @@ export function mountScheduleView(container, ctx) {
 
     try {
       const weather = await fetchWeatherForDate(destination.lat, destination.lon, dateStr);
-      if (thisRequest !== weatherRequestToken) return; // 使用者已經切到別天了，這筆結果不要用
+      // 使用者已經切到別天、或乾脆切到別的分頁/旅程（這種情況下 container 已經不在畫面上了，
+      // querySelector 會找不到元素、直接丟例外），這兩種情況這筆結果都不該再用來更新畫面。
+      if (thisRequest !== weatherRequestToken || !container.isConnected) return;
 
       if (!weather || weather.outOfRange) {
         container.querySelector("#wcCondText").textContent = "此日期還不在預報範圍內";
@@ -7107,7 +7109,7 @@ export function mountScheduleView(container, ctx) {
       container.querySelector("#wcWind").textContent = weather.windSpeed != null ? `${Math.round(weather.windSpeed)} km/h` : "--";
       container.querySelector("#wcSunrise").textContent = weather.sunrise || "--:--";
     } catch (err) {
-      if (thisRequest !== weatherRequestToken) return;
+      if (thisRequest !== weatherRequestToken || !container.isConnected) return;
       console.error("[天氣資料讀取失敗]", err);
       container.querySelector("#wcCondText").textContent = "讀取失敗";
       container.querySelector("#wcNote").textContent = `請檢查網路連線，或稍後再試${err?.message ? `（${err.message}）` : ""}`;
