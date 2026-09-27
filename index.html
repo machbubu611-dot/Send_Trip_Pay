@@ -7493,6 +7493,29 @@ const root = document.getElementById("app-root");
 let membersUnsubscribe = null;
 let activeTabCleanup = null;
 
+/* ==================== 全域錯誤保護 ====================
+ * 原本如果 boot() 或任何畫面渲染途中丟出例外，會整個變成一片空白，
+ * 使用者完全不知道發生什麼事，回報起來也很難猜是哪裡壞掉。
+ * 這裡接住所有沒被處理到的錯誤，直接把錯誤訊息印在畫面上，
+ * 使用者截圖回報就能直接看到問題在哪，不用另外教她怎麼開 Console。
+ */
+function showFatalError(err) {
+  console.error("[Fatal]", err);
+  const message = err?.message || String(err);
+  const stack = err?.stack || "";
+  root.innerHTML = `
+    <div style="padding:40px 20px; text-align:center; font-family:sans-serif;">
+      <div style="font-size:40px; margin-bottom:12px;">😵</div>
+      <h2 style="margin-bottom:8px;">發生錯誤</h2>
+      <p style="color:#8a8578; font-size:13px; margin-bottom:16px;">麻煩把下面這段錯誤訊息截圖回報：</p>
+      <div style="background:#FDF0E4; border:2px solid #E0A85C; border-radius:12px; padding:12px; text-align:left; font-size:11px; word-break:break-all; max-height:320px; overflow:auto;">${message}${stack ? `<br><br>${stack}` : ""}</div>
+      <button onclick="window.location.reload()" style="margin-top:16px; padding:10px 24px; border-radius:12px; background:#8CA888; color:white; border:none; font-size:14px;">重新整理</button>
+    </div>
+  `;
+}
+window.addEventListener("error", (e) => showFatalError(e.error || e.message));
+window.addEventListener("unhandledrejection", (e) => showFatalError(e.reason));
+
 function stopListeners() {
   if (membersUnsubscribe) {
     membersUnsubscribe();
@@ -7754,7 +7777,7 @@ async function boot() {
 }
 
 
-boot();
+boot().catch(showFatalError);
   </script>
 
   <!-- 結算截圖存成圖片用（記帳頁） -->
