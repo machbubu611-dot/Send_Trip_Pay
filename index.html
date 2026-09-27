@@ -6453,6 +6453,56 @@ function stopListeners() {
   }
 }
 
+/* ==================== 動態 manifest：讓「加入主畫面」記得住是哪趟旅程 ====================
+ * 問題：manifest.json 的 start_url 是寫死的靜態值（./index.html，不帶任何旅程 id）。
+ * iOS「加入主畫面」在讀取捷徑要開啟的網址時，讀的是 manifest 的 start_url，
+ * 不是你當下瀏覽器網址列實際顯示的那個網址——所以就算你是在
+ * ?trip=xxx 這個網址底下按「加入主畫面」，捷徑本身還是會被設定成
+ * 「開啟不帶旅程 id 的首頁」，點開自然是一片空白（其實是被導回旅程列表，
+ * 但視覺上常常就是使用者說的「空白」）。
+ *
+ * 修法：進到某趟旅程時，動態把 <link rel="manifest"> 換成一份
+ * 內嵌了「這趟旅程」start_url 的 manifest（用 Blob URL 產生，不用改後端、
+ * 不用每趟旅程真的生一個檔案）。這樣使用者在旅程裡按「加入主畫面」，
+ * 抓到的就是這份帶著正確 tripId 的 manifest，之後點主畫面捷徑就會直接
+ * 開對旅程。離開旅程、回到旅程列表時，會換回原本通用的靜態 manifest.json，
+ * 讓「加入主畫面」在列表頁時仍然是開啟「我的旅程」這個通用入口。
+ */
+let manifestBlobUrl = null;
+function applyDynamicManifest(trip, tripId) {
+  const manifest = {
+    name: trip?.name ? `${trip.name}` : "Send Trip Pay",
+    short_name: trip?.name ? trip.name.slice(0, 10) : "Send Trip Pay",
+    start_url: `./index.html?trip=${tripId}`,
+    display: "standalone",
+    background_color: "#F7F4EB",
+    theme_color: "#F7F4EB",
+    icons: [
+      { src: "./icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
+      { src: "./icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
+      { src: "./icon-512-maskable.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
+    ],
+  };
+  const blob = new Blob([JSON.stringify(manifest)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  let link = document.querySelector('link[rel="manifest"]');
+  if (!link) {
+    link = document.createElement("link");
+    link.rel = "manifest";
+    document.head.appendChild(link);
+  }
+  link.setAttribute("href", url);
+  if (manifestBlobUrl) URL.revokeObjectURL(manifestBlobUrl);
+  manifestBlobUrl = url;
+}
+function resetManifestToDefault() {
+  if (!manifestBlobUrl) return; // 從來沒換過，本來就是原本的 manifest.json，不用做事
+  const link = document.querySelector('link[rel="manifest"]');
+  if (link) link.setAttribute("href", "./manifest.json");
+  URL.revokeObjectURL(manifestBlobUrl);
+  manifestBlobUrl = null;
+}
+
 async function renderAppShell(tabKey) {
   const { currentTripId } = getState();
 
@@ -6467,6 +6517,7 @@ async function renderAppShell(tabKey) {
     root.innerHTML = `<div class="placeholder-view"><p>找不到這趟旅程。</p></div>`;
     return;
   }
+  applyDynamicManifest(trip, currentTripId);
 
   const tabRenderer = TAB_RENDERERS[tabKey] || renderScheduleView;
   const dayCount =
@@ -6578,10 +6629,12 @@ export async function handleRouteChange() {
     return;
   }
   if (path === "#/trips") {
+    resetManifestToDefault();
     await renderStandalone({ render: renderTripListView, mount: mountTripListView });
     return;
   }
   if (path === "#/wizard") {
+    resetManifestToDefault();
     await renderStandalone({ render: renderTripWizardView, mount: mountTripWizardView });
     return;
   }
