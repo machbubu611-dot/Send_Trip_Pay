@@ -644,6 +644,17 @@ button, input, textarea {
   user-select: none; touch-action: none;
 }
 .cover-position-editor.dragging{ cursor: grabbing; }
+.photo-position-editor{
+  position: relative; width: 100%; aspect-ratio: 1; border-radius: 16px; overflow: hidden; margin-bottom: 6px;
+  cursor: grab; background-size: cover; background-repeat: no-repeat; background-color: var(--cream-dark);
+  user-select: none; touch-action: none;
+}
+.photo-position-editor.dragging{ cursor: grabbing; }
+.photo-adjust-pos{
+  position: absolute; bottom: 4px; left: 4px; width: 22px; height: 22px; border-radius: 50%;
+  background: rgba(0,0,0,0.45); color: var(--white); font-size: 10px;
+  display: flex; align-items: center; justify-content: center; cursor: pointer;
+}
 .cover-position-hint{
   position: absolute; bottom: 8px; left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,0.55); color: var(--white); font-size: 10.5px; padding: 4px 12px;
@@ -4480,6 +4491,20 @@ export function renderJournalView() {
         </div>
       </div>
     </div>
+
+    <div class="sheet-overlay" id="photoPositionOverlay">
+      <div class="sheet" style="text-align:center;">
+        <div class="sheet-handle"></div>
+        <h3 class="sheet-title">調整照片顯示位置</h3>
+        <p class="field-hint">拖曳照片，把想露出的部分移到框框中間</p>
+        <div class="photo-position-editor" id="photoPositionEditor"></div>
+        <p class="field-hint" id="photoPositionRatioHint" style="margin-top:-8px;"></p>
+        <div class="btn-row">
+          <button class="btn btn-outline" id="btnCancelPhotoPosition">取消</button>
+          <button class="btn btn-primary primary-weight" id="btnConfirmPhotoPosition">完成</button>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -4502,7 +4527,52 @@ export function mountJournalView(container, ctx) {
   let editingPostId = null;
   let existingPhotoUrls = []; // 編輯時已存在、使用者沒動過的照片
   let selectedNewFiles = [];  // 這次新選的檔案（尚未上傳）
+  let existingPhotoPositions = {}; // { url: {x,y} }，已存在照片各自的顯示位置
+  let newFilePositions = [];  // 跟 selectedNewFiles 同索引對應的 {x,y}
   let currentDate = "";
+
+  function parsePosition(str) {
+    if (!str) return { x: 50, y: 50 };
+    const [x, y] = str.split(" ").map((v) => parseFloat(v));
+    return { x: isNaN(x) ? 50 : x, y: isNaN(y) ? 50 : y };
+  }
+  function positionToStyle(pos) {
+    return `${pos?.x ?? 50}% ${pos?.y ?? 50}%`;
+  }
+
+  /* 拖曳調整位置的共用邏輯：傳入目前顯示用的元素，跟讀取/寫入目前位置的 callback，
+   * 內部處理座標運算，這樣同一支邏輯可以套用在每一張照片上，不用每張各寫一份。 */
+  function wirePositionDragger(el, getPos, setPos) {
+    el.style.touchAction = "none";
+    let dragging = false;
+    let dragStart = { x: 0, y: 0 };
+    let dragStartPos = { x: 50, y: 50 };
+    el.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      el.classList.add("dragging");
+      el.setPointerCapture(e.pointerId);
+      dragStart = { x: e.clientX, y: e.clientY };
+      dragStartPos = { ...getPos() };
+    });
+    el.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      const rect = el.getBoundingClientRect();
+      const dx = e.clientX - dragStart.x;
+      const dy = e.clientY - dragStart.y;
+      const newX = Math.min(100, Math.max(0, dragStartPos.x - (dx / rect.width) * 100));
+      const newY = Math.min(100, Math.max(0, dragStartPos.y - (dy / rect.height) * 100));
+      setPos({ x: newX, y: newY });
+      el.style.backgroundPosition = positionToStyle({ x: newX, y: newY });
+    });
+    function end(e) {
+      if (!dragging) return;
+      dragging = false;
+      el.classList.remove("dragging");
+      try { el.releasePointerCapture(e.pointerId); } catch (_) {}
+    }
+    el.addEventListener("pointerup", end);
+    el.addEventListener("pointercancel", end);
+  }
 
   function dayLabel(dateStr) {
     if (!dateStr || !trip.startDate) return dateStr || "";
@@ -4549,7 +4619,8 @@ export function mountJournalView(container, ctx) {
             ${shown
               .map((url, i) => {
                 const isLast = i === shown.length - 1 && extra > 0;
-                return `<div class="ph ${gridClass === "n3" && i === 0 ? "ph-0" : ""} ${isLast ? "more-overlay" : ""}" ${isLast ? `data-more="+${extra}"` : ""} data-photo-index="${i}" style="background-image:url('${url}');background-size:cover;background-position:center;"></div>`;
+                const pos = p.photoPositions?.[url] || "center";
+                return `<div class="ph ${gridClass === "n3" && i === 0 ? "ph-0" : ""} ${isLast ? "more-overlay" : ""}" ${isLast ? `data-more="+${extra}"` : ""} data-photo-index="${i}" style="background-image:url('${url}');background-size:cover;background-position:${pos};"></div>`;
               })
               .join("")}
           </div>`
@@ -4594,14 +4665,17 @@ export function mountJournalView(container, ctx) {
     const all = [...existingItems, ...newItems];
 
     photoPreview.innerHTML = all
-      .map(
-        (item) => `
+      .map((item) => {
+        const url = item.type === "existing" ? item.url : item.objectUrl;
+        const pos = item.type === "existing" ? existingPhotoPositions[item.url] : newFilePositions[item.index];
+        return `
           <div class="photo-slot" data-type="${item.type}" data-index="${item.index}">
-            <div class="ph-fill" style="background-image:url('${item.type === "existing" ? item.url : item.objectUrl}');background-size:cover;background-position:center;"></div>
+            <div class="ph-fill" style="background-image:url('${url}');background-size:cover;background-position:${positionToStyle(pos)};"></div>
+            <div class="photo-adjust-pos" title="調整顯示位置"><i class="fa-solid fa-arrows-up-down-left-right"></i></div>
             <div class="photo-remove"><i class="fa-solid fa-xmark"></i></div>
           </div>
-        `
-      )
+        `;
+      })
       .join("");
 
     photoPreview.querySelectorAll(".photo-slot").forEach((slot, idx) => {
@@ -4609,18 +4683,57 @@ export function mountJournalView(container, ctx) {
         const urls = all.map((item) => (item.type === "existing" ? item.url : item.objectUrl));
         openLightbox(urls, idx);
       });
+      slot.querySelector(".photo-adjust-pos").addEventListener("click", (e) => {
+        e.stopPropagation();
+        const type = slot.dataset.type;
+        const idx2 = Number(slot.dataset.index);
+        const item = all.find((x) => x.type === type && x.index === idx2);
+        openPhotoPositionEditor(item);
+      });
       slot.querySelector(".photo-remove").addEventListener("click", () => {
         const type = slot.dataset.type;
         const idx2 = Number(slot.dataset.index);
-        if (type === "existing") existingPhotoUrls.splice(idx2, 1);
-        else selectedNewFiles.splice(idx2, 1);
+        if (type === "existing") {
+          delete existingPhotoPositions[existingPhotoUrls[idx2]];
+          existingPhotoUrls.splice(idx2, 1);
+        } else {
+          selectedNewFiles.splice(idx2, 1);
+          newFilePositions.splice(idx2, 1);
+        }
         renderPhotoPreviewGrid();
       });
     });
   }
 
+  /* ---------- 調整照片顯示位置 ---------- */
+  const photoPositionOverlay = container.querySelector("#photoPositionOverlay");
+  const photoPositionEditor = container.querySelector("#photoPositionEditor");
+  let editingPhotoItem = null;
+  let editingPhotoPos = { x: 50, y: 50 };
+  wirePositionDragger(photoPositionEditor, () => editingPhotoPos, (p) => (editingPhotoPos = p));
+
+  function openPhotoPositionEditor(item) {
+    editingPhotoItem = item;
+    editingPhotoPos = { ...(item.type === "existing" ? existingPhotoPositions[item.url] : newFilePositions[item.index]) || { x: 50, y: 50 } };
+    const url = item.type === "existing" ? item.url : item.objectUrl;
+    photoPositionEditor.style.backgroundImage = `url('${url}')`;
+    photoPositionEditor.style.backgroundPosition = positionToStyle(editingPhotoPos);
+    container.querySelector("#photoPositionRatioHint").textContent =
+      "貼文只有這一張照片時會顯示成較寬的比例，多張照片時是正方形，這裡先以正方形預覽";
+    photoPositionOverlay.classList.add("show");
+  }
+  container.querySelector("#btnCancelPhotoPosition").addEventListener("click", () => photoPositionOverlay.classList.remove("show"));
+  photoPositionOverlay.addEventListener("click", (e) => { if (e.target === photoPositionOverlay) photoPositionOverlay.classList.remove("show"); });
+  container.querySelector("#btnConfirmPhotoPosition").addEventListener("click", () => {
+    if (editingPhotoItem.type === "existing") existingPhotoPositions[editingPhotoItem.url] = editingPhotoPos;
+    else newFilePositions[editingPhotoItem.index] = editingPhotoPos;
+    photoPositionOverlay.classList.remove("show");
+    renderPhotoPreviewGrid();
+  });
+
   photoInput.addEventListener("change", () => {
     selectedNewFiles = selectedNewFiles.concat(Array.from(photoInput.files));
+    newFilePositions = newFilePositions.concat(Array.from(photoInput.files).map(() => ({ x: 50, y: 50 })));
     photoInput.value = "";
     renderPhotoPreviewGrid();
   });
@@ -4640,6 +4753,8 @@ export function mountJournalView(container, ctx) {
     editingPostId = null;
     existingPhotoUrls = [];
     selectedNewFiles = [];
+    existingPhotoPositions = {};
+    newFilePositions = [];
     currentDate = todayOrTripStart();
     container.querySelector("#postSheetTitle").textContent = "新增日誌";
     deleteBtn.style.display = "none";
@@ -4654,6 +4769,11 @@ export function mountJournalView(container, ctx) {
     editingPostId = p.id;
     existingPhotoUrls = [...(p.photoUrls || [])];
     selectedNewFiles = [];
+    existingPhotoPositions = {};
+    (p.photoUrls || []).forEach((url) => {
+      if (p.photoPositions?.[url]) existingPhotoPositions[url] = parsePosition(p.photoPositions[url]);
+    });
+    newFilePositions = [];
     currentDate = p.date;
     container.querySelector("#postSheetTitle").textContent = "編輯日誌";
     deleteBtn.style.display = "block";
@@ -4681,15 +4801,24 @@ export function mountJournalView(container, ctx) {
     btn.textContent = selectedNewFiles.length ? "上傳中..." : "發布中...";
     try {
       const uploadedUrls = [];
-      for (const file of selectedNewFiles) {
+      const uploadedPositions = {};
+      for (let i = 0; i < selectedNewFiles.length; i++) {
+        const file = selectedNewFiles[i];
         const url = await uploadFile(`trips/${tripId}/journal/${Date.now()}-${file.name}`, file);
         uploadedUrls.push(url);
+        uploadedPositions[url] = positionToStyle(newFilePositions[i]);
       }
       const photoUrls = [...existingPhotoUrls, ...uploadedUrls];
+      const photoPositions = {};
+      existingPhotoUrls.forEach((url) => {
+        if (existingPhotoPositions[url]) photoPositions[url] = positionToStyle(existingPhotoPositions[url]);
+      });
+      Object.assign(photoPositions, uploadedPositions);
       const payload = {
         date: currentDate,
         caption: captionInput.value.trim(),
         photoUrls,
+        photoPositions,
       };
       if (editingPostId) {
         await updateJournalPost(tripId, editingPostId, payload);
