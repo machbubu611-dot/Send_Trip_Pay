@@ -1,7 +1,6 @@
 {
   "name": "Send Trip Pay",
   "short_name": "Send Trip Pay",
-  "start_url": "./index.html",
   "display": "standalone",
   "background_color": "#F7F4EB",
   "theme_color": "#F7F4EB",

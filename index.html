@@ -6454,57 +6454,21 @@ function stopListeners() {
 }
 
 /* ==================== 記住「這台裝置上次在忙的旅程」 ====================
- * 上一版試過「進到旅程時動態換 manifest 的 start_url」，邏輯上沒錯，但
- * 實測後發現 iOS 的「加入主畫面」並不可靠會照著動態換掉的 manifest 走
- * （這塊 iOS 對 Web App Manifest 的支援本來就比 Android 陽春很多，
- * 常常還是抓「當初加入時」快取住的某個固定入口，不會每次都重新讀 manifest）。
- * 既然沒辦法保證 iOS 一定會乖乖聽 manifest 的話，就换一個不依賴 iOS
- * 配合度的做法：直接在這台裝置的 localStorage 記住「最後在看哪趟旅程」，
- * 開站的時候如果網址上沒有明確帶旅程 id（不管是被 iOS 導去裸網址、
- * 還是單純使用者自己打開首頁），只要這台裝置之前有正常認領過某趟旅程的
- * 身份，就直接帶她回去那趟旅程，而不是丟去空空的旅程列表。
- * 這個機制不靠 iOS 是否讀取 manifest，單純是瀏覽器本地儲存，比較可靠。
+ * 查證過了：iOS Safari 16.4 之後的「加入主畫面」，一律只認 manifest.json
+ * 這個檔案本身「透過網路請求」抓到的 start_url，完全不管你當下瀏覽器網址列
+ * 顯示的是什麼；而且它不會理會用 JS 動態換掉的 <link rel="manifest">（不管是
+ * Blob URL 還是 data URI），只認站上那份寫死的 manifest.json 檔案——上一版
+ * 那招動態置換，等於白做工，這版已經拿掉。
+ *
+ * 真正的解法是 manifest.json 那個檔案本身「不要寫 start_url 這個欄位」。
+ * 沒有這個欄位時，iOS 才會照舊回到「把你當下瀏覽器網址列顯示的網址存成
+ * 捷徑」這個老行為（這是其他開發者實測驗證過的作法，不是臆測）。
+ *
+ * 這裡的 localStorage 記憶機制繼續保留，當作第二層保險：就算哪天 iOS
+ * 又調整了行為、或使用者是從瀏覽器歷史記錄/書籤開啟裸網址，只要這台裝置
+ * 認領過某趟旅程，一樣能救回來，不會落到空空的旅程列表。
  */
 const LAST_TRIP_KEY = "sendtrippay:lastTripId";
-
-/* 這段 manifest 動態置換保留下來當「加分項」：如果剛好瀏覽器有照著走，
- * 加入主畫面的捷徑名稱會顯示旅程名稱、開啟網址也會直接帶對旅程；
- * 就算瀏覽器不理它，上面的 localStorage 記憶機制還是會接手救援。 */
-let manifestBlobUrl = null;
-function applyDynamicManifest(trip, tripId) {
-  const manifest = {
-    name: trip?.name ? `${trip.name}` : "Send Trip Pay",
-    short_name: trip?.name ? trip.name.slice(0, 10) : "Send Trip Pay",
-    start_url: `./index.html?trip=${tripId}`,
-    display: "standalone",
-    background_color: "#F7F4EB",
-    theme_color: "#F7F4EB",
-    icons: [
-      { src: "./icon-192.png", sizes: "192x192", type: "image/png", purpose: "any" },
-      { src: "./icon-512.png", sizes: "512x512", type: "image/png", purpose: "any" },
-      { src: "./icon-512-maskable.png", sizes: "512x512", type: "image/png", purpose: "maskable" },
-    ],
-  };
-  // 改用 data: URI 而不是 Blob URL：Blob URL 綁定在當初建立它的分頁上，
-  // 一旦分頁被系統回收（例如切到分享面板選圖示的過程），連結可能失效；
-  // data: URI 是自帶完整內容的字串，不依賴原本那個分頁還活著。
-  const json = JSON.stringify(manifest);
-  const dataUrl = `data:application/json;base64,${btoa(unescape(encodeURIComponent(json)))}`;
-  let link = document.querySelector('link[rel="manifest"]');
-  if (!link) {
-    link = document.createElement("link");
-    link.rel = "manifest";
-    document.head.appendChild(link);
-  }
-  link.setAttribute("href", dataUrl);
-  manifestBlobUrl = dataUrl;
-}
-function resetManifestToDefault() {
-  if (!manifestBlobUrl) return; // 從來沒換過，本來就是原本的 manifest.json，不用做事
-  const link = document.querySelector('link[rel="manifest"]');
-  if (link) link.setAttribute("href", "./manifest.json");
-  manifestBlobUrl = null;
-}
 
 async function renderAppShell(tabKey) {
   const { currentTripId } = getState();
@@ -6520,7 +6484,6 @@ async function renderAppShell(tabKey) {
     root.innerHTML = `<div class="placeholder-view"><p>找不到這趟旅程。</p></div>`;
     return;
   }
-  applyDynamicManifest(trip, currentTripId);
   try {
     localStorage.setItem(LAST_TRIP_KEY, currentTripId);
   } catch {
@@ -6638,12 +6601,10 @@ export async function handleRouteChange() {
     return;
   }
   if (path === "#/trips") {
-    resetManifestToDefault();
     await renderStandalone({ render: renderTripListView, mount: mountTripListView });
     return;
   }
   if (path === "#/wizard") {
-    resetManifestToDefault();
     await renderStandalone({ render: renderTripWizardView, mount: mountTripWizardView });
     return;
   }
