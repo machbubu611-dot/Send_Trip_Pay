@@ -1091,6 +1091,67 @@ function cryptoRandomToken() {
     .join("");
 }
 
+/**
+ * 複製一趟旅程：行程（schedule）、住宿、機票、租車、票券憑證會整批複製到一趟
+ * 全新的旅程；成員不複製（你會是新旅程唯一的成員，其他人要重新加入），
+ * 記帳／日誌／準備清單這些綁著「誰是誰」的資料這一版也先不複製——
+ * 這是身份系統還是「裝置本地綁定」時期的過渡方案，帳號系統做完之後，
+ * 舊旅程應該就能直接讓成員「重新綁定」，不需要再整個複製一份。
+ * @returns {Promise<string>} 新旅程的 tripId
+ */
+export async function duplicateTripCore(sourceTripId, hostUid, hostName, hostAvatarValue) {
+  const sourceTrip = await getTrip(sourceTripId);
+  if (!sourceTrip) throw new Error("找不到來源旅程");
+
+  const tripRef = doc(collection(db, "trips"));
+  await setDoc(tripRef, {
+    name: `${sourceTrip.name || "未命名旅程"}（複製）`,
+    coverType: sourceTrip.coverType || "emoji",
+    coverValue: sourceTrip.coverValue || "🏔️",
+    startDate: sourceTrip.startDate || "",
+    endDate: sourceTrip.endDate || "",
+    destination: sourceTrip.destination || null,
+    status: "active",
+    createdAt: serverTimestamp(),
+    hostUid: [hostUid],
+    memberUids: [hostUid],
+    security: { bookingsPinHash: "", pinUpdatedAt: serverTimestamp() },
+    currencies: sourceTrip.currencies || { base: "TWD", enabled: [] },
+    inviteLink: { token: cryptoRandomToken(), createdAt: serverTimestamp() },
+  });
+  const newTripId = tripRef.id;
+
+  await addDoc(collection(db, "trips", newTripId, "members"), {
+    name: hostName,
+    avatarType: "library",
+    avatarValue: hostAvatarValue,
+    isHost: true,
+    boundUids: [hostUid],
+    removed: false,
+    joinedAt: serverTimestamp(),
+  });
+  await addOwnedTrip(hostUid, newTripId);
+
+  const copyCollection = async (subcollectionName, extraFields = {}) => {
+    const snap = await getDocs(collection(db, "trips", sourceTripId, subcollectionName));
+    for (const docSnap of snap.docs) {
+      await addDoc(collection(db, "trips", newTripId, subcollectionName), {
+        ...docSnap.data(),
+        ...extraFields,
+      });
+    }
+  };
+
+  await copyCollection("schedule", { createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  await copyCollection("hotels", { createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  await copyCollection("flights", { createdAt: serverTimestamp() });
+  await copyCollection("carRentals", { createdAt: serverTimestamp() });
+  // uploadedBy 指向舊旅程的成員 id，新旅程裡查無此人，清成 null 避免顯示錯誤
+  await copyCollection("documents", { uploadedBy: null, uploadedAt: serverTimestamp() });
+
+  return newTripId;
+}
+
 /* ---------- trips/{tripId}/members ---------- */
 
 export async function getMembersOnce(tripId) {
@@ -5682,6 +5743,11 @@ export async function mountTripSettingsView(container) {
             <div class="row-text"><div class="row-title">${trip.status === "archived" ? "取消封存" : "封存這趟旅程"}</div><div class="row-sub">${trip.status === "archived" ? "重新設為進行中" : "結案後歸類到已封存，釋放即時資料空間（之後才會真的打包）"}</div></div>
             <i class="fa-solid fa-chevron-right chevron"></i>
           </div>
+          <div class="settings-row" id="rowDuplicate">
+            <i class="fa-solid fa-clone leading"></i>
+            <div class="row-text"><div class="row-title">複製這趟旅程</div><div class="row-sub">複製行程、住宿、機票、租車、票券憑證；成員需要重新加入</div></div>
+            <i class="fa-solid fa-chevron-right chevron"></i>
+          </div>
           <div class="settings-row danger-row" id="rowDelete">
             <i class="fa-solid fa-trash leading"></i>
             <div class="row-text"><div class="row-title">刪除這趟旅程</div></div>
@@ -5698,6 +5764,7 @@ export async function mountTripSettingsView(container) {
     body.querySelector("#rowPin").addEventListener("click", openPinSetSheet);
     body.querySelector("#rowInvite").addEventListener("click", copyInviteLink);
     body.querySelector("#rowArchive").addEventListener("click", toggleArchive);
+    body.querySelector("#rowDuplicate").addEventListener("click", handleDuplicateTrip);
     body.querySelector("#rowDelete").addEventListener("click", confirmDelete);
   }
 
@@ -5881,6 +5948,29 @@ export async function mountTripSettingsView(container) {
     if (newStatus === "archived") {
       alert("已封存，回到「我的旅程」可以在已封存分頁看到它。");
       gotoRoute("#/trips", null);
+    }
+  }
+
+  /* ---------- 複製旅程 ----------
+   * 現在的成員身份是裝置本地綁定，帳號系統上線前，舊旅程的成員沒辦法平滑「搬家」。
+   * 這裡先提供一個簡單版本：複製行程、住宿、機票、租車、票券憑證到一趟全新的旅程，
+   * 你自己會是新旅程唯一的成員（主揪），其他旅伴要用新的邀請連結重新加入。
+   * 記帳、日誌、準備清單這些綁著「誰是誰」的資料，這個版本先不複製。
+   */
+  async function handleDuplicateTrip() {
+    if (!confirm(`確定要複製「${trip.name}」嗎？\n\n會複製：行程、住宿、機票、租車、票券憑證\n不會複製：記帳、日誌、準備清單、成員（你會是新旅程唯一的成員，其他人要重新加入）`)) return;
+    const row = body.querySelector("#rowDuplicate");
+    const originalHtml = row.innerHTML;
+    row.innerHTML = `<div class="spinner"></div><div class="row-text"><div class="row-title">複製中，請稍候…</div></div>`;
+    try {
+      const newTripId = await duplicateTripCore(currentTripId, uid, me?.name || "主揪", me?.avatarValue || "🐰");
+      alert("複製完成！已經幫你切換到新旅程，記得去邀請旅伴重新加入。");
+      setState({ currentTripId: newTripId, currentMemberId: getBoundMemberId(newTripId) });
+      gotoRoute("#/settings", newTripId);
+    } catch (err) {
+      console.error("[複製旅程失敗]", err);
+      alert("複製失敗，請檢查網路連線後再試一次。");
+      row.innerHTML = originalHtml;
     }
   }
 
@@ -6628,12 +6718,19 @@ window.addEventListener("hashchange", handleRouteChange);
 //   2. 網址帶 ?trip=xxx 的話，代表是「旅伴透過邀請連結進來」：
 //        - 這台裝置之前認領過 → 直接進 App 殼
 //        - 沒認領過 → 導去身份綁定畫面
-//   3. 沒有帶 ?trip= 的話，先看這台裝置的 localStorage 有沒有記住「上次在忙的旅程」，
-//      有的話（而且這台裝置有認領過那趟旅程的身份）直接回去繼續看那趟旅程——
-//      這是為了救援「加入主畫面」後 iOS 可能沒有照 manifest 的 start_url 開啟
-//      正確網址的情況，不靠 iOS 是否配合，單純靠本機瀏覽器記憶。
-//      如果連 localStorage 都沒有紀錄，才真的是「主揪自己開站」→ 導去我的旅程列表
-//      （除非網址已經有 hash，例如重新整理時停在某個分頁，就維持原本的 hash）
+//   3. 沒有帶 ?trip= 的話：
+//      先看這台裝置的 localStorage 有沒有記住「上次在忙的旅程」，且這台裝置也
+//      認領過那趟旅程的成員身份，有的話直接回去繼續看那趟旅程。
+//      如果沒有（實測發現：iOS「加入主畫面」的獨立瀏覽環境，localStorage 不一定
+//      跟一般 Safari 分頁共用，救援機制可能因此失靈；但 Firestore 的雲端資料
+//      不受影響，同一個匿名 uid 兩邊讀到的「我擁有哪些旅程」是一致的），
+//      改用 Firestore 查這個 uid 名下有哪些旅程：如果剛好只有一趟「進行中」，
+//      直接帶她進去（跟旅程列表頁點旅程卡片是同一個動作，不強制要求
+//      這台裝置已經認領過成員身份——沒認領也能先看，需要認領的功能會
+//      各自在使用當下再提示）。
+//      只有「有兩趟以上進行中的旅程、判斷不出要進哪一趟」時，才真的導去
+//      旅程列表讓她自己選（除非網址已經有 hash，例如重新整理時停在某個
+//      分頁，就維持原本的 hash）
 
 
 async function boot() {
@@ -6652,14 +6749,24 @@ async function boot() {
     try {
       lastTripId = localStorage.getItem(LAST_TRIP_KEY);
     } catch {
-      // localStorage 被封鎖就當作沒有記錄，走原本「導去旅程列表」的路
+      // localStorage 被封鎖就當作沒有記錄，往下面 Firestore 那條保底路走
     }
     const lastBoundMemberId = lastTripId ? getBoundMemberId(lastTripId) : null;
+
     if (lastTripId && lastBoundMemberId) {
       setState({ currentTripId: lastTripId, currentMemberId: lastBoundMemberId });
       gotoRoute("#/app/schedule", lastTripId);
     } else {
-      gotoRoute("#/trips", null);
+      const ownedIds = await getOwnedTripIds(uid);
+      const ownedTrips = await getTripsByIds(ownedIds);
+      const ongoingTrips = ownedTrips.filter((t) => t.status !== "archived");
+      if (ongoingTrips.length === 1) {
+        const onlyTrip = ongoingTrips[0];
+        setState({ currentTripId: onlyTrip.id, currentMemberId: getBoundMemberId(onlyTrip.id) });
+        gotoRoute("#/app/schedule", onlyTrip.id);
+      } else {
+        gotoRoute("#/trips", null);
+      }
     }
   }
 
