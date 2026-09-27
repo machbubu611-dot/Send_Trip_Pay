@@ -843,6 +843,11 @@ button, input, textarea {
 .ic-title{ flex: 1; font-size: 14px; font-weight: 500; }
 .ic-more-icon{ font-size: 11px; color: var(--sage-dark); margin-left: 5px; }
 .ic-people{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+.wish-card .ic-main{ display: block; }
+.wish-loc{ font-size: 11.5px; color: var(--sage-dark); margin-top: 4px; display: flex; align-items: center; gap: 5px; }
+.wish-adopted-tag{ background: var(--sage-light); color: var(--sage-dark); }
+.btn-adopt-wish{ margin-top: 10px; width: 100%; font-size: 12px; padding: 8px; border-radius: 12px; background: var(--earth); color: var(--white); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
+.btn-adopt-wish:active{ transform: scale(0.97); }
 .ic-person-chip{ font-size: 11px; padding: 4px 10px; border-radius: 10px; background: var(--cream-dark); color: var(--ink-soft); cursor: pointer; display: flex; align-items: center; gap: 4px; border: 1px solid transparent; }
 .ic-person-chip.done{ background: var(--sage-light); color: var(--sage-dark); border-color: var(--sage); }
 .ic-person-chip.me{ border-color: var(--earth); }
@@ -4673,7 +4678,7 @@ export function mountJournalView(container, ctx) {
 const TYPE_META = {
   todo: { label: "待辦", icon: "fa-list-check" },
   packing: { label: "行李", icon: "fa-suitcase" },
-  wishlist: { label: "想去", icon: "fa-heart" },
+  wishlist: { label: "許願", icon: "fa-heart" },
   shopping: { label: "購物", icon: "fa-cart-shopping" },
 };
 
@@ -4699,13 +4704,22 @@ export function renderPlanningView() {
         <div class="sheet-handle"></div>
         <h3 class="sheet-title" id="planSheetTitle">新增待辦</h3>
 
-        <div class="context-chip-row">
+        <div class="context-chip-row" id="planAssigneeChipRow">
           <div class="context-chip" id="planAssigneeChip"><i class="fa-solid fa-user-group"></i><span id="planAssigneeChipText"></span><i class="fa-solid fa-pen" style="font-size:9px; opacity:0.7;"></i></div>
         </div>
         <div class="assignee-picker" id="planAssigneePicker" style="display:none;"></div>
 
         <label class="field-label">主旨</label>
         <input type="text" class="text-input" id="planTitle" placeholder="例如：申請日本 eSIM 上網卡">
+
+        <div id="planWishlistFields" style="display:none;">
+          <label class="field-label">Google 地圖連結</label>
+          <div class="loc-input-row">
+            <input type="text" class="text-input" id="planMapsUrl" placeholder="貼上想去的地點連結">
+            <button class="btn maps-nav-btn" id="btnOpenPlanMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
+          </div>
+          <p class="field-hint" id="planMapsNameHint"></p>
+        </div>
 
         <label class="field-label">內容 <span style="font-weight:400;color:var(--ink-soft);">· 選填</span></label>
         <textarea class="textarea-input" id="planContent" placeholder="補充細節，例如購買連結、注意事項..."></textarea>
@@ -4722,6 +4736,22 @@ export function renderPlanningView() {
         </div>
       </div>
     </div>
+
+    <div class="sheet-overlay" id="adoptWishOverlay">
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h3 class="sheet-title">加入正式行程</h3>
+        <p class="field-hint" id="adoptWishSummary"></p>
+        <label class="field-label">選哪一天</label>
+        <select class="text-input" id="adoptWishDate"></select>
+        <label class="field-label">時間</label>
+        <input type="time" class="text-input" id="adoptWishTime" value="10:00">
+        <div class="btn-row">
+          <button class="btn btn-outline" id="btnCancelAdoptWish">取消</button>
+          <button class="btn btn-primary primary-weight" id="btnConfirmAdoptWish">建立行程</button>
+        </div>
+      </div>
+    </div>
   `;
 }
 
@@ -4729,6 +4759,7 @@ export function mountPlanningView(container, ctx) {
   const { tripId, memberId, trip, members } = ctx;
   const cleanups = [];
   const memberById = (id) => members.find((m) => m.id === id);
+  const isHost = !!memberById(memberId)?.isHost;
 
   let allItems = [];
   let activeType = "todo";
@@ -4768,10 +4799,52 @@ export function mountPlanningView(container, ctx) {
   /* ---------- 列表渲染 ---------- */
   const listEl = container.querySelector("#planItemList");
   function renderList() {
-    const items = allItems.filter((it) => it.type === activeType && (activePerson === "all" || (it.assigneeIds || []).includes(activePerson)));
+    const items = allItems.filter((it) => {
+      if (it.type !== activeType) return false;
+      if (activePerson === "all") return true;
+      return activeType === "wishlist" ? it.submittedBy === activePerson : (it.assigneeIds || []).includes(activePerson);
+    });
 
     if (!items.length) {
       listEl.innerHTML = `<p style="text-align:center;color:var(--ink-soft);padding:20px 0;font-size:13px;">這裡還沒有項目</p>`;
+      return;
+    }
+
+    if (activeType === "wishlist") {
+      listEl.innerHTML = items
+        .map((it) => {
+          const submitter = memberById(it.submittedBy);
+          const hasExtra = !!(it.content || (it.photoUrls && it.photoUrls.length));
+          const adopted = it.status === "adopted";
+          return `
+            <div class="item-card wish-card" data-item-id="${it.id}">
+              <div class="ic-tags">
+                <span class="ic-tag">${submitter?.name || "?"} 提議</span>
+                ${adopted ? `<span class="ic-tag wish-adopted-tag"><i class="fa-solid fa-check"></i> 已加入行程</span>` : ""}
+              </div>
+              <div class="ic-main" data-open-detail="${it.id}">
+                <div class="ic-title">${it.title || "（未命名）"} ${hasExtra ? `<i class="fa-solid ${it.photoUrls?.length ? "fa-image" : "fa-note-sticky"} ic-more-icon" title="有更多內容"></i>` : ""}</div>
+                ${it.placeName || it.googleMapsUrl ? `<div class="wish-loc"><i class="fa-solid fa-location-dot"></i>${it.placeName || "有附 Google 地圖連結"}</div>` : ""}
+              </div>
+              ${isHost && !adopted ? `<button class="btn-adopt-wish" data-item-id="${it.id}"><i class="fa-solid fa-calendar-plus"></i> 加入正式行程</button>` : ""}
+            </div>
+          `;
+        })
+        .join("");
+
+      listEl.querySelectorAll("[data-open-detail]").forEach((el) => {
+        el.addEventListener("click", () => {
+          const it = allItems.find((x) => x.id === el.dataset.openDetail);
+          openEditSheet(it);
+        });
+      });
+      listEl.querySelectorAll(".btn-adopt-wish").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const it = allItems.find((x) => x.id === btn.dataset.itemId);
+          openAdoptWishSheet(it);
+        });
+      });
       return;
     }
 
@@ -4891,13 +4964,22 @@ export function mountPlanningView(container, ctx) {
   /* ---------- 新增/編輯 sheet ---------- */
   const sheet = container.querySelector("#planSheetOverlay");
   const deleteBtn = container.querySelector("#btnDeletePlanItem");
+  const assigneeChipRow = container.querySelector("#planAssigneeChipRow");
+  const wishlistFields = container.querySelector("#planWishlistFields");
+  const planMapsUrlInput = container.querySelector("#planMapsUrl");
+  wireMapsLinkButton(planMapsUrlInput, container.querySelector("#btnOpenPlanMaps"), container.querySelector("#planMapsNameHint"));
 
   function openAddSheet() {
     editingItemId = null;
     existingPhotoUrls = [];
     selectedNewFiles = [];
+    const isWishlist = activeType === "wishlist";
+    assigneeChipRow.style.display = isWishlist ? "none" : "flex";
+    wishlistFields.style.display = isWishlist ? "block" : "none";
+    planMapsUrlInput.value = "";
+    planMapsUrlInput.dispatchEvent(new Event("input"));
     selectedAssignees = activePerson === "all" ? members.map((m) => m.id) : [activePerson];
-    container.querySelector("#planSheetTitle").textContent = `新增${TYPE_META[activeType].label}`;
+    container.querySelector("#planSheetTitle").textContent = isWishlist ? "新增許願" : `新增${TYPE_META[activeType].label}`;
     deleteBtn.style.display = "none";
     assigneeChipText.textContent = assigneesToLabel(selectedAssignees);
     assigneePicker.style.display = "none";
@@ -4911,9 +4993,14 @@ export function mountPlanningView(container, ctx) {
     editingItemId = it.id;
     existingPhotoUrls = [...(it.photoUrls || [])];
     selectedNewFiles = [];
+    const isWishlist = it.type === "wishlist";
+    assigneeChipRow.style.display = isWishlist ? "none" : "flex";
+    wishlistFields.style.display = isWishlist ? "block" : "none";
+    planMapsUrlInput.value = it.googleMapsUrl || "";
+    planMapsUrlInput.dispatchEvent(new Event("input"));
     selectedAssignees = [...(it.assigneeIds || [])];
-    container.querySelector("#planSheetTitle").textContent = `編輯${TYPE_META[it.type].label}`;
-    deleteBtn.style.display = "block";
+    container.querySelector("#planSheetTitle").textContent = isWishlist ? "編輯許願" : `編輯${TYPE_META[it.type].label}`;
+    deleteBtn.style.display = isWishlist && !isHost && it.submittedBy !== memberId ? "none" : "block";
     assigneeChipText.textContent = assigneesToLabel(selectedAssignees);
     assigneePicker.style.display = "none";
     renderAssigneePicker();
@@ -4938,7 +5025,8 @@ export function mountPlanningView(container, ctx) {
       container.querySelector("#planTitle").focus();
       return;
     }
-    if (!selectedAssignees.length) {
+    const isWishlist = activeType === "wishlist" || allItems.find((x) => x.id === editingItemId)?.type === "wishlist";
+    if (!isWishlist && !selectedAssignees.length) {
       alert("請選擇指派對象");
       return;
     }
@@ -4952,16 +5040,19 @@ export function mountPlanningView(container, ctx) {
         uploadedUrls.push(url);
       }
       const photoUrls = [...existingPhotoUrls, ...uploadedUrls];
-      const payload = {
-        title,
-        content: container.querySelector("#planContent").value.trim(),
-        photoUrls,
-        assigneeIds: selectedAssignees,
-      };
+      const payload = isWishlist
+        ? withMapsUrl({ title, content: container.querySelector("#planContent").value.trim(), photoUrls }, planMapsUrlInput.value)
+        : {
+            title,
+            content: container.querySelector("#planContent").value.trim(),
+            photoUrls,
+            assigneeIds: selectedAssignees,
+          };
       if (editingItemId) {
         await updatePlanningItem(tripId, editingItemId, payload);
       } else {
-        await createPlanningItem(tripId, { ...payload, type: activeType, createdBy: memberId });
+        const extra = isWishlist ? { type: "wishlist", submittedBy: memberId, status: "pending" } : { type: activeType };
+        await createPlanningItem(tripId, { ...payload, ...extra, createdBy: memberId });
       }
       sheet.classList.remove("show");
     } catch (err) {
@@ -4993,6 +5084,62 @@ export function mountPlanningView(container, ctx) {
     }
   );
   cleanups.push(unsubscribe);
+
+  /* ---------- 把許願清單的項目「加入正式行程」 ---------- */
+  const adoptOverlay = container.querySelector("#adoptWishOverlay");
+  const adoptDateSelect = container.querySelector("#adoptWishDate");
+  const adoptTimeInput = container.querySelector("#adoptWishTime");
+  let adoptingItem = null;
+
+  function openAdoptWishSheet(it) {
+    adoptingItem = it;
+    const days = isoDateRange(trip.startDate, trip.endDate);
+    if (!days.length) {
+      alert("這趟旅程還沒設定日期，請先去旅程設定填上出發/回程日期。");
+      return;
+    }
+    adoptDateSelect.innerHTML = days
+      .map((d) => `<option value="${d}">${formatMD(d)}（${weekdayLabel(d)}）</option>`)
+      .join("");
+    adoptTimeInput.value = "10:00";
+    container.querySelector("#adoptWishSummary").textContent = `「${it.title}」加入行程後，這則許願會標記成「已加入行程」。`;
+    adoptOverlay.classList.add("show");
+  }
+  container.querySelector("#btnCancelAdoptWish").addEventListener("click", () => adoptOverlay.classList.remove("show"));
+  adoptOverlay.addEventListener("click", (e) => { if (e.target === adoptOverlay) adoptOverlay.classList.remove("show"); });
+
+  container.querySelector("#btnConfirmAdoptWish").addEventListener("click", async () => {
+    if (!adoptingItem) return;
+    const date = adoptDateSelect.value;
+    const time = adoptTimeInput.value || "10:00";
+    const btn = container.querySelector("#btnConfirmAdoptWish");
+    btn.disabled = true;
+    btn.textContent = "建立中…";
+    try {
+      const dayEventsSnap = await getDocs(query(collection(db, "trips", tripId, "schedule"), where("date", "==", date)));
+      const maxOrder = dayEventsSnap.docs.reduce((m, d) => Math.max(m, d.data().order ?? 0), -1);
+      const newEventId = await createScheduleEvent(tripId, {
+        date,
+        time,
+        category: "spot",
+        title: adoptingItem.title,
+        location: withMapsUrl({}, adoptingItem.googleMapsUrl || ""),
+        note: adoptingItem.content || "",
+        todos: [],
+        order: maxOrder + 1,
+        createdBy: memberId,
+      });
+      await updatePlanningItem(tripId, adoptingItem.id, { status: "adopted", adoptedEventId: newEventId });
+      adoptOverlay.classList.remove("show");
+      alert("已經加入正式行程了，去「行程」分頁那一天可以看到。");
+    } catch (err) {
+      console.error("[採用許願失敗]", err);
+      alert("建立失敗，請檢查網路連線後再試一次。");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "建立行程";
+    }
+  });
 
   return () => cleanups.forEach((fn) => fn());
 }
