@@ -476,6 +476,9 @@ button, input, textarea {
 .trip-date{ font-size: 12px; color: var(--ink-soft); margin-top: 3px; }
 .trip-bottom{ display: flex; justify-content: space-between; align-items: center; }
 .tl-fab{ position: fixed; bottom: 24px; left: 22px; right: 22px; max-width: 436px; margin: 0 auto; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.tl-login-banner{ background: var(--sage-light); border-radius: 16px; padding: 16px; margin: 0 0 90px; text-align: center; }
+.tl-login-banner p{ font-size: 12.5px; color: var(--ink); margin-bottom: 12px; }
+.tl-login-banner button{ width: 100%; }
 .account-upgrade-card{ background: var(--warn-bg); border: 2px solid var(--warn); border-radius: 16px; padding: 12px 14px; margin-bottom: 14px; font-size: 12.5px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .account-upgrade-card.is-ok{ background: var(--sage-light); border-color: var(--sage); }
 .account-upgrade-card button{ flex: 0 0 auto; font-size: 11.5px; padding: 6px 12px; }
@@ -875,6 +878,8 @@ button, input, textarea {
 }
 .btn-adopt-wish{ margin-top: 10px; width: 100%; font-size: 12px; padding: 8px; border-radius: 12px; background: var(--earth); color: var(--white); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
 .btn-adopt-wish:active{ transform: scale(0.97); }
+.btn-open-plan-link{ margin-top: 10px; width: 100%; font-size: 12px; padding: 8px; border-radius: 12px; background: var(--sage); color: var(--white); display: flex; align-items: center; justify-content: center; gap: 6px; cursor: pointer; }
+.btn-open-plan-link:active{ transform: scale(0.97); }
 .ic-person-chip{ font-size: 11px; padding: 4px 10px; border-radius: 10px; background: var(--cream-dark); color: var(--ink-soft); cursor: pointer; display: flex; align-items: center; gap: 4px; border: 1px solid transparent; }
 .ic-person-chip.done{ background: var(--sage-light); color: var(--sage-dark); border-color: var(--sage); }
 .ic-person-chip.me{ border-color: var(--earth); }
@@ -2204,6 +2209,30 @@ function wireMapsLinkButton(input, button, nameHintEl) {
     if (!url) return;
     if (!/^https?:\/\//i.test(url)) {
       alert("這個看起來不太像網址，麻煩確認一下是不是完整複製了 Google 地圖的分享連結。");
+      return;
+    }
+    window.open(url, "_blank", "noopener");
+  });
+}
+
+/**
+ * 跟 wireMapsLinkButton 邏輯一樣，但用在「準備」分頁的通用連結欄位——
+ * 不是 Google 地圖分享連結，是任何網址（票券、訂位頁面、參考資料等），
+ * 所以錯誤訊息跟提示文字改成通用版本，不提 Google 地圖。
+ * @param {HTMLInputElement} input
+ * @param {HTMLButtonElement} button
+ */
+function wireLinkButton(input, button) {
+  function refresh() {
+    button.disabled = !input.value.trim();
+  }
+  input.addEventListener("input", refresh);
+  refresh();
+  button.addEventListener("click", () => {
+    const url = input.value.trim();
+    if (!url) return;
+    if (!/^https?:\/\//i.test(url)) {
+      alert("這個看起來不太像網址，麻煩確認一下是不是完整複製了網址（要包含 https://）。");
       return;
     }
     window.open(url, "_blank", "noopener");
@@ -4889,6 +4918,7 @@ const TYPE_META = {
   todo: { label: "待辦", icon: "fa-list-check" },
   packing: { label: "行李", icon: "fa-suitcase" },
   wishlist: { label: "許願", icon: "fa-heart" },
+  link: { label: "連結", icon: "fa-link" },
   shopping: { label: "購物", icon: "fa-cart-shopping" },
 };
 
@@ -4929,6 +4959,14 @@ export function renderPlanningView() {
             <button class="btn maps-nav-btn" id="btnOpenPlanMaps" type="button" title="在 Google 地圖開啟"><i class="fa-solid fa-location-arrow"></i></button>
           </div>
           <p class="field-hint" id="planMapsNameHint"></p>
+        </div>
+
+        <div id="planLinkFields" style="display:none;">
+          <label class="field-label">網址</label>
+          <div class="loc-input-row">
+            <input type="text" class="text-input" id="planLinkUrl" placeholder="貼上網址，例如 https://...">
+            <button class="btn maps-nav-btn" id="btnOpenPlanLink" type="button" title="開啟連結"><i class="fa-solid fa-arrow-up-right-from-square"></i></button>
+          </div>
         </div>
 
         <label class="field-label">內容 <span style="font-weight:400;color:var(--ink-soft);">· 選填</span></label>
@@ -5012,7 +5050,7 @@ export function mountPlanningView(container, ctx) {
     const items = allItems.filter((it) => {
       if (it.type !== activeType) return false;
       if (activePerson === "all") return true;
-      return activeType === "wishlist" ? it.submittedBy === activePerson : (it.assigneeIds || []).includes(activePerson);
+      return activeType === "wishlist" || activeType === "link" ? it.createdBy === activePerson : (it.assigneeIds || []).includes(activePerson);
     });
 
     if (!items.length) {
@@ -5053,6 +5091,40 @@ export function mountPlanningView(container, ctx) {
           e.stopPropagation();
           const it = allItems.find((x) => x.id === btn.dataset.itemId);
           openAdoptWishSheet(it);
+        });
+      });
+      return;
+    }
+
+    if (activeType === "link") {
+      listEl.innerHTML = items
+        .map((it) => {
+          const adder = memberById(it.createdBy);
+          const hasExtra = !!(it.content || (it.photoUrls && it.photoUrls.length));
+          return `
+            <div class="item-card link-card" data-item-id="${it.id}">
+              <div class="ic-tags">
+                <span class="ic-tag">${adder?.name || "?"} 新增</span>
+              </div>
+              <div class="ic-main" data-open-detail="${it.id}">
+                <div class="ic-title">${it.title || "（未命名）"} ${hasExtra ? `<i class="fa-solid ${it.photoUrls?.length ? "fa-image" : "fa-note-sticky"} ic-more-icon" title="有更多內容"></i>` : ""}</div>
+              </div>
+              ${it.url ? `<button class="btn-open-plan-link" data-url="${it.url}"><i class="fa-solid fa-arrow-up-right-from-square"></i> 前往連結</button>` : ""}
+            </div>
+          `;
+        })
+        .join("");
+
+      listEl.querySelectorAll("[data-open-detail]").forEach((el) => {
+        el.addEventListener("click", () => {
+          const it = allItems.find((x) => x.id === el.dataset.openDetail);
+          openEditSheet(it);
+        });
+      });
+      listEl.querySelectorAll(".btn-open-plan-link").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          window.open(btn.dataset.url, "_blank", "noopener");
         });
       });
       return;
@@ -5178,18 +5250,25 @@ export function mountPlanningView(container, ctx) {
   const wishlistFields = container.querySelector("#planWishlistFields");
   const planMapsUrlInput = container.querySelector("#planMapsUrl");
   wireMapsLinkButton(planMapsUrlInput, container.querySelector("#btnOpenPlanMaps"), container.querySelector("#planMapsNameHint"));
+  const linkFields = container.querySelector("#planLinkFields");
+  const planLinkUrlInput = container.querySelector("#planLinkUrl");
+  wireLinkButton(planLinkUrlInput, container.querySelector("#btnOpenPlanLink"));
 
   function openAddSheet() {
     editingItemId = null;
     existingPhotoUrls = [];
     selectedNewFiles = [];
     const isWishlist = activeType === "wishlist";
-    assigneeChipRow.style.display = isWishlist ? "none" : "flex";
+    const isLink = activeType === "link";
+    assigneeChipRow.style.display = isWishlist || isLink ? "none" : "flex";
     wishlistFields.style.display = isWishlist ? "block" : "none";
+    linkFields.style.display = isLink ? "block" : "none";
     planMapsUrlInput.value = "";
     planMapsUrlInput.dispatchEvent(new Event("input"));
+    planLinkUrlInput.value = "";
+    planLinkUrlInput.dispatchEvent(new Event("input"));
     selectedAssignees = activePerson === "all" ? members.map((m) => m.id) : [activePerson];
-    container.querySelector("#planSheetTitle").textContent = isWishlist ? "新增許願" : `新增${TYPE_META[activeType].label}`;
+    container.querySelector("#planSheetTitle").textContent = isWishlist ? "新增許願" : isLink ? "新增連結" : `新增${TYPE_META[activeType].label}`;
     deleteBtn.style.display = "none";
     assigneeChipText.textContent = assigneesToLabel(selectedAssignees);
     assigneePicker.style.display = "none";
@@ -5204,13 +5283,17 @@ export function mountPlanningView(container, ctx) {
     existingPhotoUrls = [...(it.photoUrls || [])];
     selectedNewFiles = [];
     const isWishlist = it.type === "wishlist";
-    assigneeChipRow.style.display = isWishlist ? "none" : "flex";
+    const isLink = it.type === "link";
+    assigneeChipRow.style.display = isWishlist || isLink ? "none" : "flex";
     wishlistFields.style.display = isWishlist ? "block" : "none";
+    linkFields.style.display = isLink ? "block" : "none";
     planMapsUrlInput.value = it.googleMapsUrl || "";
     planMapsUrlInput.dispatchEvent(new Event("input"));
+    planLinkUrlInput.value = it.url || "";
+    planLinkUrlInput.dispatchEvent(new Event("input"));
     selectedAssignees = [...(it.assigneeIds || [])];
-    container.querySelector("#planSheetTitle").textContent = isWishlist ? "編輯許願" : `編輯${TYPE_META[it.type].label}`;
-    deleteBtn.style.display = isWishlist && !isHost && it.submittedBy !== memberId ? "none" : "block";
+    container.querySelector("#planSheetTitle").textContent = isWishlist ? "編輯許願" : isLink ? "編輯連結" : `編輯${TYPE_META[it.type].label}`;
+    deleteBtn.style.display = (isWishlist || isLink) && !isHost && it.createdBy !== memberId ? "none" : "block";
     assigneeChipText.textContent = assigneesToLabel(selectedAssignees);
     assigneePicker.style.display = "none";
     renderAssigneePicker();
@@ -5235,8 +5318,15 @@ export function mountPlanningView(container, ctx) {
       container.querySelector("#planTitle").focus();
       return;
     }
-    const isWishlist = activeType === "wishlist" || allItems.find((x) => x.id === editingItemId)?.type === "wishlist";
-    if (!isWishlist && !selectedAssignees.length) {
+    const editingType = allItems.find((x) => x.id === editingItemId)?.type;
+    const isWishlist = activeType === "wishlist" || editingType === "wishlist";
+    const isLink = activeType === "link" || editingType === "link";
+    if (isLink && !planLinkUrlInput.value.trim()) {
+      planLinkUrlInput.focus();
+      alert("請填上網址");
+      return;
+    }
+    if (!isWishlist && !isLink && !selectedAssignees.length) {
       alert("請選擇指派對象");
       return;
     }
@@ -5250,18 +5340,16 @@ export function mountPlanningView(container, ctx) {
         uploadedUrls.push(url);
       }
       const photoUrls = [...existingPhotoUrls, ...uploadedUrls];
+      const basePayload = { title, content: container.querySelector("#planContent").value.trim(), photoUrls };
       const payload = isWishlist
-        ? withMapsUrl({ title, content: container.querySelector("#planContent").value.trim(), photoUrls }, planMapsUrlInput.value)
-        : {
-            title,
-            content: container.querySelector("#planContent").value.trim(),
-            photoUrls,
-            assigneeIds: selectedAssignees,
-          };
+        ? withMapsUrl(basePayload, planMapsUrlInput.value)
+        : isLink
+        ? { ...basePayload, url: planLinkUrlInput.value.trim() }
+        : { ...basePayload, assigneeIds: selectedAssignees };
       if (editingItemId) {
         await updatePlanningItem(tripId, editingItemId, payload);
       } else {
-        const extra = isWishlist ? { type: "wishlist", submittedBy: memberId, status: "pending" } : { type: activeType };
+        const extra = isWishlist ? { type: "wishlist", submittedBy: memberId, status: "pending" } : isLink ? { type: "link" } : { type: activeType };
         await createPlanningItem(tripId, { ...payload, ...extra, createdBy: memberId });
       }
       sheet.classList.remove("show");
@@ -5842,6 +5930,11 @@ export function renderTripListView() {
       <div class="tl-list" id="tlOngoing"></div>
       <div class="tl-list" id="tlArchived" style="display:none;"></div>
 
+      <div class="tl-login-banner" id="tlLoginBanner" style="display:none;">
+        <p>這台裝置還沒登入任何帳號。如果你之前已經設定過帳號密碼，點這裡登入回原本的身份：</p>
+        <button class="btn btn-outline" id="btnGotoLogin"><i class="fa-solid fa-right-to-bracket"></i> 登入既有帳號</button>
+      </div>
+
       <button class="btn btn-primary tl-fab" id="btnCreateTrip">
         <i class="fa-solid fa-plus"></i> 建立新行程
       </button>
@@ -5890,6 +5983,11 @@ export async function mountTripListView(container) {
   archivedEl.innerHTML = archived.length
     ? archived.map(tripCardHtml).join("")
     : `<p style="text-align:center;color:var(--ink-soft);padding:30px 0;">還沒有封存的旅程</p>`;
+
+  const loginBanner = container.querySelector("#tlLoginBanner");
+  const isAnonymous = auth.currentUser?.isAnonymous !== false;
+  loginBanner.style.display = isAnonymous && !ongoing.length && !archived.length ? "block" : "none";
+  container.querySelector("#btnGotoLogin").addEventListener("click", () => gotoRoute("#/claim", null));
 
   container.querySelectorAll(".trip-card").forEach((card) => {
     card.addEventListener("click", () => {
