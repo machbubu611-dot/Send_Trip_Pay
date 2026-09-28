@@ -2141,6 +2141,32 @@ function localISODate(d) {
 }
 
 /**
+ * 把 Firestore Timestamp（或它序列化後的樣子）安全轉成毫秒數，方便排序用。
+ * 拿不到就回傳 0，排序時自然會被排到最後面。
+ * @param {*} ts
+ * @returns {number}
+ */
+function toMillis(ts) {
+  if (!ts) return 0;
+  if (typeof ts.toMillis === "function") return ts.toMillis();
+  if (typeof ts.seconds === "number") return ts.seconds * 1000;
+  return 0;
+}
+
+/**
+ * 記一筆「這個成員剛剛做了某個動作」——用來讓旅程頁最上方的頭像堆疊，
+ * 把最近有在編輯的人往前排，畫面感覺比較「活著」。
+ * 用 fire-and-forget（不 await、吞掉錯誤）呼叫，不會拖慢或擋住原本的儲存動作，
+ * 就算這筆更新失敗，也完全不影響原本真正要存的那筆資料。
+ * @param {string} tripId
+ * @param {string} memberId
+ */
+function touchMemberActivity(tripId, memberId) {
+  if (!tripId || !memberId) return;
+  updateDoc(doc(db, "trips", tripId, "members", memberId), { lastActiveAt: serverTimestamp() }).catch(() => {});
+}
+
+/**
  * 從「完整版」Google 地圖網址裡，直接解析出地點名稱——純字串解析，不打任何
  * 網路請求，所以不會有 CORS 的問題。網址長這樣的話會抓得到：
  *   https://www.google.com/maps/place/小豆島國際飯店/@34.48,134.32,17z/...
@@ -2964,6 +2990,7 @@ export function mountBookingsView(container, ctx) {
     };
     if (editingFlightId) await updateFlight(tripId, editingFlightId, payload);
     else await createFlight(tripId, payload);
+    touchMemberActivity(tripId, memberId);
     flightSheet.classList.remove("show");
   });
 
@@ -3278,6 +3305,7 @@ export function mountBookingsView(container, ctx) {
       console.log("[住宿] 準備寫入 Firestore", payload);
       if (editingHotelId) await updateHotel(tripId, editingHotelId, payload);
       else await createHotel(tripId, payload);
+      touchMemberActivity(tripId, memberId);
       console.log("[住宿] 儲存完成");
       hotelSheet.classList.remove("show");
     } catch (err) {
@@ -3531,6 +3559,7 @@ export function mountBookingsView(container, ctx) {
       };
       if (editingCarId) await updateCarRental(tripId, editingCarId, payload);
       else await createCarRental(tripId, payload);
+      touchMemberActivity(tripId, memberId);
       carSheet.classList.remove("show");
     } catch (err) {
       console.error("[儲存租車失敗]", err);
@@ -3614,6 +3643,7 @@ export function mountBookingsView(container, ctx) {
         fileSizeBytes: file.size,
         uploadedBy: memberId,
       });
+      touchMemberActivity(tripId, memberId);
       docSheet.classList.remove("show");
     } catch (err) {
       console.error("[上傳憑證失敗]", err);
@@ -4203,6 +4233,7 @@ export function mountExpenseView(container, ctx) {
     try {
       if (editingExpenseId) await updateExpense(tripId, editingExpenseId, payload);
       else await createExpense(tripId, payload);
+      touchMemberActivity(tripId, memberId);
       sheet.classList.remove("show");
     } catch (err) {
       console.error("[儲存記帳失敗]", err);
@@ -4882,6 +4913,7 @@ export function mountJournalView(container, ctx) {
       } else {
         await createJournalPost(tripId, { ...payload, authorId: memberId });
       }
+      touchMemberActivity(tripId, memberId);
       sheet.classList.remove("show");
     } catch (err) {
       console.error("[儲存日誌失敗]", err);
@@ -5355,6 +5387,7 @@ export function mountPlanningView(container, ctx) {
         const extra = isWishlist ? { type: "wishlist", submittedBy: memberId, status: "pending" } : isLink ? { type: "link" } : { type: activeType };
         await createPlanningItem(tripId, { ...payload, ...extra, createdBy: memberId });
       }
+      touchMemberActivity(tripId, memberId);
       sheet.classList.remove("show");
     } catch (err) {
       console.error("[儲存項目失敗]", err);
@@ -7746,6 +7779,7 @@ export function mountScheduleView(container, ctx) {
       payload.order = maxOrder + 1;
       await createScheduleEvent(tripId, payload);
     }
+    touchMemberActivity(tripId, memberId);
     closeSheet();
   });
 
@@ -7901,7 +7935,9 @@ async function renderAppShell(tabKey) {
         title: trip.name,
         datesLabel,
         isHost,
-        members: members.map((m) => ({ avatarEmojiOrUrl: m.avatarValue, isPhotoUrl: m.avatarType === "upload", avatarPosition: m.avatarPosition, bg: "var(--sage-light)" })),
+        members: [...members]
+          .sort((a, b) => (toMillis(b.lastActiveAt) || 0) - (toMillis(a.lastActiveAt) || 0))
+          .map((m) => ({ avatarEmojiOrUrl: m.avatarValue, isPhotoUrl: m.avatarType === "upload", avatarPosition: m.avatarPosition, bg: "var(--sage-light)" })),
       })}
       <div class="view-body">${tabRenderer()}</div>
       ${renderBottomNav(tabKey)}
