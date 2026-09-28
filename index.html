@@ -7410,53 +7410,66 @@ export function mountScheduleView(container, ctx) {
   let weatherRequestToken = 0;
   async function updateWeatherCard(dateStr) {
     const thisRequest = ++weatherRequestToken; // 避免使用者快速切日期時，舊的回應蓋掉新的畫面
+
+    // container 是整個 App 殼的根節點，切分頁時只有裡面的內容被整個換掉，
+    // container 本身還是「連著」畫面的，所以不能用 container.isConnected 判斷
+    // 天氣卡片還在不在——上一版就是踩到這個，判斷永遠是 true，等於沒判斷。
+    // 正確做法：直接檢查天氣卡片這個特定元素還存不存在，抓不到就代表使用者
+    // 已經切到別的分頁／別的旅程，這次結果不該再用來更新畫面。
+    function wc(id) {
+      return container.querySelector(`#${id}`);
+    }
+    function isStale() {
+      return thisRequest !== weatherRequestToken || !wc("wcCondText");
+    }
+
     const destination = trip.destination;
     if (!destination) {
-      container.querySelector("#wcLocText").textContent = "尚未設定目的地";
-      container.querySelector("#wcCondText").textContent = "--";
-      container.querySelector("#wcTemp").textContent = "--°";
-      container.querySelector("#wcHilo").textContent = "-- / --";
-      container.querySelector("#wcRain").textContent = "--%";
-      container.querySelector("#wcWind").textContent = "--";
-      container.querySelector("#wcSunrise").textContent = "--:--";
-      container.querySelector("#wcNote").textContent = "去旅程設定頁設定目的地城市，就能看到這裡的即時天氣";
+      if (isStale()) return;
+      wc("wcLocText").textContent = "尚未設定目的地";
+      wc("wcCondText").textContent = "--";
+      wc("wcTemp").textContent = "--°";
+      wc("wcHilo").textContent = "-- / --";
+      wc("wcRain").textContent = "--%";
+      wc("wcWind").textContent = "--";
+      wc("wcSunrise").textContent = "--:--";
+      wc("wcNote").textContent = "去旅程設定頁設定目的地城市，就能看到這裡的即時天氣";
       return;
     }
 
-    container.querySelector("#wcLocText").textContent = destination.name;
-    container.querySelector("#wcCondText").textContent = "讀取中...";
-    container.querySelector("#wcNote").textContent = "資料來源：Open-Meteo";
+    if (isStale()) return;
+    wc("wcLocText").textContent = destination.name;
+    wc("wcCondText").textContent = "讀取中...";
+    wc("wcNote").textContent = "資料來源：Open-Meteo";
 
     try {
       const weather = await fetchWeatherForDate(destination.lat, destination.lon, dateStr);
-      // 使用者已經切到別天、或乾脆切到別的分頁/旅程（這種情況下 container 已經不在畫面上了，
-      // querySelector 會找不到元素、直接丟例外），這兩種情況這筆結果都不該再用來更新畫面。
-      if (thisRequest !== weatherRequestToken || !container.isConnected) return;
+      if (isStale()) return;
 
       if (!weather || weather.outOfRange) {
-        container.querySelector("#wcCondText").textContent = "此日期還不在預報範圍內";
-        container.querySelector("#wcTemp").textContent = "--°";
-        container.querySelector("#wcHilo").textContent = "-- / --";
-        container.querySelector("#wcRain").textContent = "--%";
-        container.querySelector("#wcWind").textContent = "--";
-        container.querySelector("#wcSunrise").textContent = "--:--";
-        container.querySelector("#wcNote").textContent = "通常要到出發前 16 天內才查得到預報";
+        wc("wcCondText").textContent = "此日期還不在預報範圍內";
+        wc("wcTemp").textContent = "--°";
+        wc("wcHilo").textContent = "-- / --";
+        wc("wcRain").textContent = "--%";
+        wc("wcWind").textContent = "--";
+        wc("wcSunrise").textContent = "--:--";
+        wc("wcNote").textContent = "通常要到出發前 16 天內才查得到預報";
         return;
       }
 
       const desc = describeWeatherCode(weather.weatherCode);
-      container.querySelector("#wcCondIcon").className = `fa-solid ${desc.icon}`;
-      container.querySelector("#wcCondText").textContent = desc.label;
-      container.querySelector("#wcTemp").textContent = `${Math.round(weather.tempMax)}°`;
-      container.querySelector("#wcHilo").textContent = `${Math.round(weather.tempMin)}° / ${Math.round(weather.tempMax)}°`;
-      container.querySelector("#wcRain").textContent = weather.rainChance != null ? `${weather.rainChance}%` : "--%";
-      container.querySelector("#wcWind").textContent = weather.windSpeed != null ? `${Math.round(weather.windSpeed)} km/h` : "--";
-      container.querySelector("#wcSunrise").textContent = weather.sunrise || "--:--";
+      wc("wcCondIcon").className = `fa-solid ${desc.icon}`;
+      wc("wcCondText").textContent = desc.label;
+      wc("wcTemp").textContent = `${Math.round(weather.tempMax)}°`;
+      wc("wcHilo").textContent = `${Math.round(weather.tempMin)}° / ${Math.round(weather.tempMax)}°`;
+      wc("wcRain").textContent = weather.rainChance != null ? `${weather.rainChance}%` : "--%";
+      wc("wcWind").textContent = weather.windSpeed != null ? `${Math.round(weather.windSpeed)} km/h` : "--";
+      wc("wcSunrise").textContent = weather.sunrise || "--:--";
     } catch (err) {
-      if (thisRequest !== weatherRequestToken || !container.isConnected) return;
+      if (isStale()) return;
       console.error("[天氣資料讀取失敗]", err);
-      container.querySelector("#wcCondText").textContent = "讀取失敗";
-      container.querySelector("#wcNote").textContent = `請檢查網路連線，或稍後再試${err?.message ? `（${err.message}）` : ""}`;
+      wc("wcCondText").textContent = "讀取失敗";
+      wc("wcNote").textContent = `請檢查網路連線，或稍後再試${err?.message ? `（${err.message}）` : ""}`;
     }
   }
 
