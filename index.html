@@ -4918,8 +4918,8 @@ const TYPE_META = {
   todo: { label: "待辦", icon: "fa-list-check" },
   packing: { label: "行李", icon: "fa-suitcase" },
   wishlist: { label: "許願", icon: "fa-heart" },
-  link: { label: "連結", icon: "fa-link" },
   shopping: { label: "購物", icon: "fa-cart-shopping" },
+  link: { label: "連結", icon: "fa-link" },
 };
 
 export function renderPlanningView() {
@@ -5008,6 +5008,7 @@ export function mountPlanningView(container, ctx) {
   const cleanups = [];
   const memberById = (id) => members.find((m) => m.id === id);
   const isHost = !!memberById(memberId)?.isHost;
+  enableDragScroll(container.querySelector("#planCatTabs"));
 
   let allItems = [];
   let activeType = "todo";
