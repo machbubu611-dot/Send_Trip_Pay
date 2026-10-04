@@ -2323,6 +2323,22 @@ const AIRPORT_CITY_MAP = {"AAA":"Anaa","AAC":"El Arish","AAE":"Annaba","AAL":"Aa
  * @param {boolean} params.isHost - 目前登入者是否為主揪，決定切換行程/設定圖示是否顯示
  * @param {Array<{avatarEmojiOrUrl:string,isPhotoUrl:boolean,avatarPosition?:string,bg:string}>} params.members
  */
+/** 頭像堆疊（前 3 個 + 超過的顯示 +N）。獨立成函式，讓成員活動時間更新時可以只換這一塊，不用整個畫面重畫。 */
+export function buildAvatarStackHtml(members = []) {
+  const extraCount = members.length - 3;
+  return (
+    members
+      .slice(0, 3)
+      .map(
+        (m) =>
+          `<div class="as" style="background:${m.bg || "var(--sage-light)"}">${
+            m.isPhotoUrl ? `<img src="${m.avatarEmojiOrUrl}" alt="" style="object-position:${m.avatarPosition || "center"};">` : m.avatarEmojiOrUrl
+          }</div>`
+      )
+      .join("") + (extraCount > 0 ? `<div class="as as-more">+${extraCount}</div>` : "")
+  );
+}
+
 export function renderTripHeader({
   coverEmojiOrUrl = "🏔️",
   isPhotoUrl = false,
@@ -2335,16 +2351,7 @@ export function renderTripHeader({
     ? `<img src="${coverEmojiOrUrl}" alt="">`
     : coverEmojiOrUrl;
 
-  const extraCount = members.length - 3;
-  const avatars = members
-    .slice(0, 3)
-    .map(
-      (m) =>
-        `<div class="as" style="background:${m.bg || "var(--sage-light)"}">${
-          m.isPhotoUrl ? `<img src="${m.avatarEmojiOrUrl}" alt="" style="object-position:${m.avatarPosition || "center"};">` : m.avatarEmojiOrUrl
-        }</div>`
-    )
-    .join("") + (extraCount > 0 ? `<div class="as as-more">+${extraCount}</div>` : "");
+  const avatars = buildAvatarStackHtml(members);
 
   return `
     <div class="trip-header" id="tripHeader">
@@ -7235,6 +7242,8 @@ const CATEGORY_META = {
   stay: { label: "住宿", icon: "fa-bed", cssVar: "--cat-stay" },
 };
 const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
+// 每趟旅程在行程頁最後選到的日期（只存在記憶體，重新整理頁面就會重置，這是預期的）
+const scheduleSelectedDateByTrip = {};
 
 function isoDateRange(start, end) {
   if (!start || !end) return [];
@@ -7358,7 +7367,10 @@ export function mountScheduleView(container, ctx) {
   const { tripId, memberId, trip } = ctx;
   const days = isoDateRange(trip.startDate, trip.endDate);
   const todayStr = localISODate(new Date());
-  let selectedDate = days.includes(todayStr) ? todayStr : days[0] || null;
+  // 記住這趟旅程上次看到哪一天：切分頁再回來、或畫面因為成員資料變動而重新掛載時，
+  // 不會被打回第一天（或今天）
+  const rememberedDate = scheduleSelectedDateByTrip[tripId];
+  let selectedDate = days.includes(rememberedDate) ? rememberedDate : days.includes(todayStr) ? todayStr : days[0] || null;
 
   let allEvents = [];
   let hotelsCache = null; // lazy load
@@ -7399,6 +7411,7 @@ export function mountScheduleView(container, ctx) {
     dateScrollEl.querySelectorAll(".date-card").forEach((card) => {
       card.addEventListener("click", () => {
         selectedDate = card.dataset.date;
+        scheduleSelectedDateByTrip[tripId] = selectedDate;
         renderDateScroll();
         renderTimeline();
         updateWeatherCard(selectedDate);
@@ -7743,6 +7756,7 @@ export function mountScheduleView(container, ctx) {
       // 如果原本選的那天剛好是被對調的其中一天，畫面跟著換過去，比較不會跳來跳去
       if (selectedDate === dayA) selectedDate = dayB;
       else if (selectedDate === dayB) selectedDate = dayA;
+      scheduleSelectedDateByTrip[tripId] = selectedDate;
       renderDateScroll();
       renderTimeline();
       updateWeatherCard(selectedDate);
@@ -7936,7 +7950,31 @@ async function renderAppShell(tabKey) {
       ? `${trip.startDate} - ${trip.endDate}${dayCount ? ` · ${dayCount}天${dayCount - 1}夜` : ""}`
       : "";
 
+  // 頭像堆疊用：最近有編輯的成員排前面
+  function headerMembersFrom(members) {
+    return [...members]
+      .sort((a, b) => (toMillis(b.lastActiveAt) || 0) - (toMillis(a.lastActiveAt) || 0))
+      .map((m) => ({ avatarEmojiOrUrl: m.avatarValue, isPhotoUrl: m.avatarType === "upload", avatarPosition: m.avatarPosition, bg: "var(--sage-light)" }));
+  }
+  // 排除「最近活動時間」之後的成員資料簽章：只有這個欄位變動時，不需要整個畫面重畫
+  function membersSignature(members) {
+    return JSON.stringify(members.map(({ lastActiveAt, ...rest }) => rest));
+  }
+  let lastPaintedSignature = null;
+
   function paint(members) {
+    // 每次有人存檔都會更新他自己的 lastActiveAt，成員資料因此即時推播一次。
+    // 如果實際上只有這個欄位變了，只更新最上方的頭像排序就好——
+    // 整個畫面重畫的話，正在看的那一天會被重設回第一天、打開中的視窗會被關掉、
+    // 準備分頁會跳回第一個分類，使用體驗很糟。
+    const signature = membersSignature(members);
+    if (lastPaintedSignature !== null && signature === lastPaintedSignature) {
+      const stack = root.querySelector("#headerAvatarStack");
+      if (stack) stack.innerHTML = buildAvatarStackHtml(headerMembersFrom(members));
+      return;
+    }
+    lastPaintedSignature = signature;
+
     const { currentMemberId } = getState();
     const me = members.find((m) => m.id === currentMemberId);
     const isHost = !!me?.isHost;
@@ -7948,9 +7986,7 @@ async function renderAppShell(tabKey) {
         title: trip.name,
         datesLabel,
         isHost,
-        members: [...members]
-          .sort((a, b) => (toMillis(b.lastActiveAt) || 0) - (toMillis(a.lastActiveAt) || 0))
-          .map((m) => ({ avatarEmojiOrUrl: m.avatarValue, isPhotoUrl: m.avatarType === "upload", avatarPosition: m.avatarPosition, bg: "var(--sage-light)" })),
+        members: headerMembersFrom(members),
       })}
       <div class="view-body">${tabRenderer()}</div>
       ${renderBottomNav(tabKey)}
