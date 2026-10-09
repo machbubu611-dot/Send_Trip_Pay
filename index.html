@@ -7334,6 +7334,11 @@ export function renderScheduleView() {
           <div><label class="field-label">行程名稱</label><input type="text" class="text-input" id="fieldTitle" placeholder="例如：白色戀人公園"></div>
         </div>
 
+        <div id="moveDayRow" style="display:none;">
+          <label class="field-label">所在日期 <span style="font-weight:400;color:var(--ink-soft);">· 選別天就會把這則行程移過去</span></label>
+          <select class="text-input" id="fieldMoveDay"></select>
+        </div>
+
         <label class="field-label">Google 地圖連結 <span style="font-weight:400;color:var(--ink-soft);">· 選填，貼上分享連結就能一鍵導航</span></label>
         <div class="loc-input-row">
           <input type="text" class="text-input" id="fieldMapsUrl" placeholder="貼上 Google 地圖連結">
@@ -7391,6 +7396,9 @@ export function mountScheduleView(container, ctx) {
   const fieldTitle = container.querySelector("#fieldTitle");
   const fieldMapsUrl = container.querySelector("#fieldMapsUrl");
   wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"), container.querySelector("#fieldMapsNameHint"));
+  const moveDayRow = container.querySelector("#moveDayRow");
+  const fieldMoveDay = container.querySelector("#fieldMoveDay");
+  let editingEventOriginalDate = null; // 編輯中的行程原本在哪一天，存檔時用來判斷有沒有被移到別天
   const todoListEl = container.querySelector("#todoList");
   const fieldNote = container.querySelector("#fieldNote");
   const saveBtn = container.querySelector("#btnSaveEvent");
@@ -7578,6 +7586,8 @@ export function mountScheduleView(container, ctx) {
     fieldMapsUrl.value = "";
     fieldMapsUrl.dispatchEvent(new Event("input"));
     fieldNote.value = "";
+    moveDayRow.style.display = "none";
+    editingEventOriginalDate = null;
     renderTodoList();
     updateSaveButton();
   }
@@ -7693,6 +7703,13 @@ export function mountScheduleView(container, ctx) {
     }
     fieldTime.value = ev.time || "10:00";
     fieldTitle.value = ev.title || "";
+    editingEventOriginalDate = ev.date;
+    const moveDayOptions = days.includes(ev.date) ? days : [ev.date, ...days];
+    fieldMoveDay.innerHTML = moveDayOptions
+      .map((d) => `<option value="${d}">${formatMD(d)}（${weekdayLabel(d)}）${d === ev.date ? " · 目前" : ""}</option>`)
+      .join("");
+    fieldMoveDay.value = ev.date;
+    moveDayRow.style.display = "block";
     fieldMapsUrl.value = ev.location?.googleMapsUrl || "";
     fieldMapsUrl.dispatchEvent(new Event("input"));
     fieldNote.value = ev.note || "";
@@ -7787,8 +7804,9 @@ export function mountScheduleView(container, ctx) {
       fieldTitle.focus();
       return;
     }
+    const targetDate = editingEventId ? fieldMoveDay.value || selectedDate : selectedDate;
     const payload = {
-      date: selectedDate,
+      date: targetDate,
       time: fieldTime.value,
       category: selectedCategory,
       title: fieldTitle.value.trim(),
@@ -7799,7 +7817,19 @@ export function mountScheduleView(container, ctx) {
     };
 
     if (editingEventId) {
+      const movedToOtherDay = targetDate !== editingEventOriginalDate;
+      if (movedToOtherDay) {
+        // 移到別天：排在那一天的最後面，之後想調順序再拖曳
+        const targetDayEvents = allEvents.filter((e) => e.date === targetDate);
+        payload.order = targetDayEvents.reduce((m, e) => Math.max(m, e.order ?? 0), -1) + 1;
+      }
       await updateScheduleEvent(tripId, editingEventId, payload);
+      if (movedToOtherDay) {
+        touchMemberActivity(tripId, memberId);
+        closeSheet();
+        alert(`已移到 ${formatMD(targetDate)}（${weekdayLabel(targetDate)}），排在那天的最後面。`);
+        return;
+      }
     } else {
       const dayEvents = allEvents.filter((e) => e.date === selectedDate);
       const maxOrder = dayEvents.reduce((m, e) => Math.max(m, e.order ?? 0), -1);
