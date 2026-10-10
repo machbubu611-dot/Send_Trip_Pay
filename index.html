@@ -558,7 +558,13 @@ button, input, textarea {
 .t-item.dragging{ opacity: 0.4; }
 .t-drag{ display: flex; align-items: center; color: var(--sage-light); cursor: grab; padding-top: 2px; font-size: 16px; }
 .t-time{ width: 40px; flex: 0 0 auto; font-size: 12px; color: var(--ink-soft); padding-top: 14px; font-weight: 500; }
-.t-card{ flex: 1; background: var(--white); border-radius: 18px; padding: 12px 14px; box-shadow: var(--shadow-sm); cursor: pointer; min-width: 0; }
+.t-card{ flex: 1; background: var(--white); border-radius: 18px; padding: 12px 44px 12px 14px; box-shadow: var(--shadow-sm); cursor: pointer; min-width: 0; position: relative; }
+.t-card.is-done{ background: var(--sage-light); }
+.t-card.is-done .t-title{ text-decoration: line-through; color: var(--ink-soft); }
+.t-done-btn{ position: absolute; top: 10px; right: 10px; width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--sage); background: transparent; color: transparent; display: flex; align-items: center; justify-content: center; font-size: 13px; cursor: pointer; padding: 0; }
+.t-done-btn:active{ transform: scale(0.9); }
+.t-done-btn.done{ background: var(--ok); border-color: var(--ok); color: var(--white); }
+.t-done-tag{ display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; font-size: 10.5px; color: var(--ok); font-weight: 700; }
 .t-cat{ display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 8px; color: var(--white); font-family: var(--font-heading); margin-bottom: 6px; }
 .t-card .t-title{ font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
 .t-nav-icon{ display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; background: var(--sage-light); color: var(--sage-dark); font-size: 11px; cursor: pointer; flex: 0 0 auto; }
@@ -1345,7 +1351,7 @@ export async function duplicateTripCore(sourceTripId, hostUid, hostName, hostAva
     }
   };
 
-  await copyCollection("schedule", { createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  await copyCollection("schedule", { done: false, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
   await copyCollection("hotels", { createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
   await copyCollection("flights", { createdAt: serverTimestamp() });
   await copyCollection("carRentals", { createdAt: serverTimestamp() });
@@ -7613,8 +7619,9 @@ export function mountScheduleView(container, ctx) {
           <div class="t-item" draggable="true" data-event-id="${e.id}">
             <div class="t-drag"><i class="fa-solid fa-grip-lines"></i></div>
             <div class="t-time">${e.time || ""}</div>
-            <div class="t-card">
-              <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>
+            <div class="t-card ${e.done ? "is-done" : ""}">
+              <button class="t-done-btn ${e.done ? "done" : ""}" data-done-id="${e.id}" title="${e.done ? "取消完成" : "勾選完成"}"><i class="fa-solid fa-check"></i></button>
+              <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>${e.done ? `<span class="t-done-tag"><i class="fa-solid fa-circle-check"></i> 已完成</span>` : ""}
               <div class="t-title">${e.title || "（未命名）"}</div>
               ${e.location?.googleMapsUrl ? `<div class="t-loc-name t-nav-icon" data-nav-url="${e.location.googleMapsUrl}"><i class="fa-solid fa-location-arrow"></i>${e.location?.placeName || "在 Google 地圖開啟"}</div>` : ""}
               ${e.note ? `<div class="t-note"><i class="fa-solid fa-triangle-exclamation"></i><span>${truncate(e.note, 20)}</span></div>` : ""}
@@ -7628,6 +7635,17 @@ export function mountScheduleView(container, ctx) {
       item.querySelector(".t-card").addEventListener("click", () => {
         const ev = events.find((e) => e.id === item.dataset.eventId);
         openEditSheet(ev);
+      });
+      item.querySelector(".t-done-btn").addEventListener("click", async (e) => {
+        e.stopPropagation();
+        const ev = events.find((x) => x.id === item.dataset.eventId);
+        try {
+          await updateScheduleEvent(tripId, ev.id, { done: !ev.done });
+          touchMemberActivity(tripId, memberId);
+        } catch (err) {
+          console.error("[勾選行程完成失敗]", err);
+          alert("更新失敗，請檢查網路連線後再試一次。");
+        }
       });
       item.querySelectorAll(".t-nav-icon").forEach((icon) => {
         icon.addEventListener("click", (e) => {
