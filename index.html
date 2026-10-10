@@ -536,6 +536,13 @@ button, input, textarea {
 .wc-fetch-note{ font-size: 9.5px; opacity: 0.75; text-align: right; margin-top: 4px; }
 
 .section-label{ padding: 0 0 10px; font-size: 13px; color: var(--ink-soft); font-weight: 500; display: flex; align-items: center; gap: 6px; }
+.day-note-card{ background: var(--earth-light); border-radius: 18px; padding: 12px 14px; margin-bottom: 14px; cursor: pointer; }
+.day-note-card:active{ transform: scale(0.99); }
+.dn-head{ display: flex; align-items: center; gap: 6px; font-size: 12.5px; font-weight: 700; color: var(--earth-dark); margin-bottom: 6px; }
+.dn-head .dn-edit{ margin-left: auto; font-size: 11px; opacity: 0.7; }
+.dn-body{ font-size: 13.5px; line-height: 1.55; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+.dn-body.is-empty{ color: var(--ink-soft); font-size: 12.5px; }
+.dn-meta{ font-size: 10.5px; color: var(--ink-soft); margin-top: 6px; }
 .section-label-row{ display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .section-label-row .section-label{ padding: 0; flex: 1; min-width: 0; }
 .btn-swap-days{ font-size: 11.5px; color: var(--sage-dark); background: var(--sage-light); border-radius: 12px; padding: 6px 10px; display: flex; align-items: center; gap: 5px; cursor: pointer; flex: 0 0 auto; white-space: nowrap; }
@@ -7290,6 +7297,12 @@ export function renderScheduleView() {
         <div class="wc-fetch-note" id="wcNote">資料來源：Open-Meteo</div>
       </div>
 
+      <div class="day-note-card" id="dayNoteCard">
+        <div class="dn-head"><i class="fa-solid fa-star"></i> 當日重點 <span class="dn-edit"><i class="fa-solid fa-pen"></i></span></div>
+        <div class="dn-body" id="dayNoteBody"></div>
+        <div class="dn-meta" id="dayNoteMeta"></div>
+      </div>
+
       <div class="section-label-row">
         <div class="section-label"><i class="fa-solid fa-route"></i> <span id="sectionLabelText">今日行程</span> · 可拖曳調整順序</div>
         <button class="btn-swap-days" id="btnSwapDays" title="交換兩天行程"><i class="fa-solid fa-right-left"></i> 交換兩天</button>
@@ -7297,6 +7310,19 @@ export function renderScheduleView() {
       <div class="timeline" id="timeline"></div>
 
       <button class="btn-dashed" id="btnAddEvent"><i class="fa-solid fa-plus"></i> 新增這天的行程</button>
+    </div>
+
+    <div class="sheet-overlay" id="dayNoteOverlay">
+      <div class="sheet">
+        <div class="sheet-handle"></div>
+        <h3 class="sheet-title" id="dayNoteSheetTitle">當日重點</h3>
+        <p class="field-hint">寫下這天最重要的事，例如集合時間、必訂的餐廳、要帶的東西。所有旅伴都看得到，清空儲存就是刪除。</p>
+        <textarea class="textarea-input" id="dayNoteInput" placeholder="例如：8:30 一定要在港口集合，船班不等人"></textarea>
+        <div class="btn-row">
+          <button class="btn btn-outline" id="btnCancelDayNote">取消</button>
+          <button class="btn btn-primary primary-weight" id="btnSaveDayNote">儲存</button>
+        </div>
+      </div>
     </div>
 
     <div class="sheet-overlay" id="swapDaysOverlay">
@@ -7497,6 +7523,7 @@ export function mountScheduleView(container, ctx) {
   function renderTimeline() {
     const dayIndex = days.indexOf(selectedDate) + 1;
     sectionLabelEl.textContent = `Day ${dayIndex} 行程`;
+    renderDayNote(); // 換日期、對調、行程更新時，當日重點跟著切到對應那天
 
     const events = allEvents
       .filter((e) => e.date === selectedDate)
@@ -7840,6 +7867,69 @@ export function mountScheduleView(container, ctx) {
     closeSheet();
   });
 
+  /* ---------- 當日重點 ---------- */
+  // 存在旅程文件的 dayNotes 欄位（{ "2026-12-01": {text, updatedBy} }），
+  // 用即時監聽讓所有旅伴看到同一份；不用新增子集合，所以 Security Rules 不用改。
+  const dayNoteBody = container.querySelector("#dayNoteBody");
+  const dayNoteMeta = container.querySelector("#dayNoteMeta");
+  const dayNoteOverlay = container.querySelector("#dayNoteOverlay");
+  const dayNoteInput = container.querySelector("#dayNoteInput");
+  let dayNotes = trip.dayNotes || {};
+
+  function renderDayNote() {
+    const note = dayNotes[selectedDate];
+    const text = (note?.text || "").trim();
+    if (text) {
+      dayNoteBody.textContent = text;
+      dayNoteBody.classList.remove("is-empty");
+      const author = (ctx.members || []).find((m) => m.id === note.updatedBy);
+      dayNoteMeta.textContent = author ? `${author.name} 更新` : "";
+    } else {
+      dayNoteBody.textContent = "點一下，寫下這天最重要的事";
+      dayNoteBody.classList.add("is-empty");
+      dayNoteMeta.textContent = "";
+    }
+  }
+
+  container.querySelector("#dayNoteCard").addEventListener("click", () => {
+    if (!selectedDate) return;
+    container.querySelector("#dayNoteSheetTitle").textContent = `${formatMD(selectedDate)}（${weekdayLabel(selectedDate)}）當日重點`;
+    dayNoteInput.value = dayNotes[selectedDate]?.text || "";
+    dayNoteOverlay.classList.add("show");
+    dayNoteInput.focus();
+  });
+  container.querySelector("#btnCancelDayNote").addEventListener("click", () => dayNoteOverlay.classList.remove("show"));
+  dayNoteOverlay.addEventListener("click", (e) => { if (e.target === dayNoteOverlay) dayNoteOverlay.classList.remove("show"); });
+  container.querySelector("#btnSaveDayNote").addEventListener("click", async () => {
+    const btn = container.querySelector("#btnSaveDayNote");
+    const date = selectedDate;
+    const text = dayNoteInput.value.trim();
+    btn.disabled = true;
+    btn.textContent = "儲存中…";
+    try {
+      await updateDoc(doc(db, "trips", tripId), {
+        [`dayNotes.${date}`]: { text, updatedBy: memberId, updatedAt: serverTimestamp() },
+      });
+      touchMemberActivity(tripId, memberId);
+      dayNoteOverlay.classList.remove("show");
+    } catch (err) {
+      console.error("[儲存當日重點失敗]", err);
+      alert("儲存失敗，請檢查網路連線後再試一次。");
+    } finally {
+      btn.disabled = false;
+      btn.textContent = "儲存";
+    }
+  });
+
+  const unsubscribeTrip = onSnapshot(
+    doc(db, "trips", tripId),
+    (snap) => {
+      dayNotes = snap.data()?.dayNotes || {};
+      renderDayNote();
+    },
+    (err) => console.error("[當日重點監聽失敗]", err)
+  );
+
   renderDateScroll();
   renderTimeline();
   updateWeatherCard(selectedDate);
@@ -7862,7 +7952,10 @@ export function mountScheduleView(container, ctx) {
     }
   );
 
-  return unsubscribe;
+  return () => {
+    unsubscribe();
+    unsubscribeTrip();
+  };
 }
 // router.js
 // hash-based 路由：
