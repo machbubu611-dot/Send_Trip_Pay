@@ -516,6 +516,11 @@ button, input, textarea {
 .date-scroll::-webkit-scrollbar{ display: none; }
 .date-card{ flex: 0 0 auto; width: 68px; background: var(--white); border-radius: 16px; padding: 8px 0 10px; text-align: center; box-shadow: var(--shadow-sm); cursor: pointer; border: 2px solid transparent; }
 .date-card.active{ border-color: var(--sage-dark); background: var(--sage-light); }
+.date-card.spare{ border: 2px dashed var(--earth); background: var(--cream); }
+.date-card.spare.active{ border-style: solid; background: var(--earth-light); }
+.date-card.spare .day-badge{ background: var(--earth); }
+.date-card.add-spare{ border: 2px dashed var(--sage); background: transparent; box-shadow: none; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; color: var(--sage-dark); font-size: 11px; width: 60px; }
+.date-card.add-spare i{ font-size: 16px; }
 .date-card .day-badge{ display: inline-block; font-size: 9px; font-weight: 700; color: var(--white); background: var(--sage-dark); padding: 2px 8px; border-radius: 8px; margin-bottom: 6px; font-family: var(--font-heading); letter-spacing: 0.5px; }
 .date-card.active .day-badge{ background: var(--earth); }
 .date-card .d-date{ font-size: 15px; font-weight: 700; font-family: var(--font-heading); color: var(--ink); }
@@ -929,6 +934,7 @@ import {
   serverTimestamp,
   orderBy,
   writeBatch,
+  deleteField,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-firestore.js";
 import {
   getStorage,
@@ -1306,6 +1312,7 @@ export async function duplicateTripCore(sourceTripId, hostUid, hostName, hostAva
     startDate: sourceTrip.startDate || "",
     endDate: sourceTrip.endDate || "",
     destination: sourceTrip.destination || null,
+    spareDayCount: sourceTrip.spareDayCount || 0,
     status: "active",
     createdAt: serverTimestamp(),
     hostUid: [hostUid],
@@ -7263,13 +7270,27 @@ function isoDateRange(start, end) {
   }
   return dates;
 }
+/* 備選日：不是真的日期，是行程頁最後面幾個「暫放整天行程」的格子，
+ * 事件的 date 欄位存成 "spare-1"、"spare-2"…，排到正式日期後可以再移進去。 */
+function isSpareDay(dateStr) {
+  return /^spare-\d+$/.test(dateStr || "");
+}
+function spareDayNumber(dateStr) {
+  return Number(String(dateStr).replace("spare-", ""));
+}
 function formatMD(dateStr) {
+  if (isSpareDay(dateStr)) return `備選${spareDayNumber(dateStr)}`;
   const d = new Date(dateStr + "T00:00:00");
   return `${d.getMonth() + 1}/${d.getDate()}`;
 }
 function weekdayLabel(dateStr) {
+  if (isSpareDay(dateStr)) return "暫排";
   const d = new Date(dateStr + "T00:00:00");
   return WEEKDAY_LABELS[d.getDay()];
+}
+/** 完整的日期標籤，給提示訊息、下拉選單用：正式日期是「12/1（二）」，備選日是「備選日 1」 */
+function dayFullLabel(dateStr) {
+  return isSpareDay(dateStr) ? `備選日 ${spareDayNumber(dateStr)}` : `${formatMD(dateStr)}（${weekdayLabel(dateStr)}）`;
 }
 function truncate(text, len) {
   if (!text) return "";
@@ -7305,6 +7326,7 @@ export function renderScheduleView() {
 
       <div class="section-label-row">
         <div class="section-label"><i class="fa-solid fa-route"></i> <span id="sectionLabelText">今日行程</span> · 可拖曳調整順序</div>
+        <button class="btn-swap-days" id="btnDeleteSpareDay" title="刪除這個備選日" style="display:none;"><i class="fa-solid fa-trash"></i> 刪除備選日</button>
         <button class="btn-swap-days" id="btnSwapDays" title="交換兩天行程"><i class="fa-solid fa-right-left"></i> 交換兩天</button>
       </div>
       <div class="timeline" id="timeline"></div>
@@ -7396,12 +7418,16 @@ export function renderScheduleView() {
  */
 export function mountScheduleView(container, ctx) {
   const { tripId, memberId, trip } = ctx;
-  const days = isoDateRange(trip.startDate, trip.endDate);
+  const officialDays = isoDateRange(trip.startDate, trip.endDate);
+  let spareCount = trip.spareDayCount || 0;
+  const spareIdsFor = (n) => Array.from({ length: n }, (_, i) => `spare-${i + 1}`);
+  // days = 正式日期 + 備選日，整個行程頁（日期列、對調、移到別天）都用這份清單
+  let days = [...officialDays, ...spareIdsFor(spareCount)];
   const todayStr = localISODate(new Date());
   // 記住這趟旅程上次看到哪一天：切分頁再回來、或畫面因為成員資料變動而重新掛載時，
   // 不會被打回第一天（或今天）
   const rememberedDate = scheduleSelectedDateByTrip[tripId];
-  let selectedDate = days.includes(rememberedDate) ? rememberedDate : days.includes(todayStr) ? todayStr : days[0] || null;
+  let selectedDate = days.includes(rememberedDate) ? rememberedDate : officialDays.includes(todayStr) ? todayStr : days[0] || null;
 
   let allEvents = [];
   let hotelsCache = null; // lazy load
@@ -7431,18 +7457,21 @@ export function mountScheduleView(container, ctx) {
   const deleteBtn = container.querySelector("#btnDeleteEvent");
 
   function renderDateScroll() {
-    dateScrollEl.innerHTML = days
-      .map(
-        (d) => `
-          <div class="date-card ${d === selectedDate ? "active" : ""}" data-date="${d}">
-            <span class="day-badge">DAY ${days.indexOf(d) + 1}</span>
-            <div class="d-date">${formatMD(d)}</div>
+    dateScrollEl.innerHTML =
+      days
+        .map(
+          (d) => `
+          <div class="date-card ${isSpareDay(d) ? "spare" : ""} ${d === selectedDate ? "active" : ""}" data-date="${d}">
+            <span class="day-badge">${isSpareDay(d) ? "備選" : `DAY ${days.indexOf(d) + 1}`}</span>
+            <div class="d-date">${isSpareDay(d) ? spareDayNumber(d) : formatMD(d)}</div>
             <div class="d-dow">${weekdayLabel(d)}</div>
           </div>
         `
-      )
-      .join("");
-    dateScrollEl.querySelectorAll(".date-card").forEach((card) => {
+        )
+        .join("") +
+      `<div class="date-card add-spare" id="btnAddSpareDay"><i class="fa-solid fa-plus"></i>備選日</div>`;
+    dateScrollEl.querySelector("#btnAddSpareDay").addEventListener("click", addSpareDay);
+    dateScrollEl.querySelectorAll(".date-card[data-date]").forEach((card) => {
       card.addEventListener("click", () => {
         selectedDate = card.dataset.date;
         scheduleSelectedDateByTrip[tripId] = selectedDate;
@@ -7457,6 +7486,10 @@ export function mountScheduleView(container, ctx) {
   let weatherRequestToken = 0;
   async function updateWeatherCard(dateStr) {
     const thisRequest = ++weatherRequestToken; // 避免使用者快速切日期時，舊的回應蓋掉新的畫面
+    // 備選日不是真的日期，沒有天氣可查，直接把天氣卡藏起來
+    const weatherCardEl = container.querySelector("#weatherCard");
+    if (weatherCardEl) weatherCardEl.style.display = isSpareDay(dateStr) ? "none" : "";
+    if (isSpareDay(dateStr)) return;
 
     // container 是整個 App 殼的根節點，切分頁時只有裡面的內容被整個換掉，
     // container 本身還是「連著」畫面的，所以不能用 container.isConnected 判斷
@@ -7521,8 +7554,14 @@ export function mountScheduleView(container, ctx) {
   }
 
   function renderTimeline() {
-    const dayIndex = days.indexOf(selectedDate) + 1;
-    sectionLabelEl.textContent = `Day ${dayIndex} 行程`;
+    const dayIndex = officialDays.indexOf(selectedDate) + 1;
+    sectionLabelEl.textContent = isSpareDay(selectedDate) ? `備選日 ${spareDayNumber(selectedDate)} 行程` : `Day ${dayIndex} 行程`;
+    // 只有「最後一個、而且是空的」備選日可以刪，避免刪到中間造成編號錯亂或誤刪行程
+    const canDeleteSpare =
+      isSpareDay(selectedDate) &&
+      spareDayNumber(selectedDate) === spareCount &&
+      !allEvents.some((e) => e.date === selectedDate);
+    container.querySelector("#btnDeleteSpareDay").style.display = canDeleteSpare ? "flex" : "none";
     renderDayNote(); // 換日期、對調、行程更新時，當日重點跟著切到對應那天
 
     const events = allEvents
@@ -7733,7 +7772,7 @@ export function mountScheduleView(container, ctx) {
     editingEventOriginalDate = ev.date;
     const moveDayOptions = days.includes(ev.date) ? days : [ev.date, ...days];
     fieldMoveDay.innerHTML = moveDayOptions
-      .map((d) => `<option value="${d}">${formatMD(d)}（${weekdayLabel(d)}）${d === ev.date ? " · 目前" : ""}</option>`)
+      .map((d) => `<option value="${d}">${dayFullLabel(d)}${d === ev.date ? " · 目前" : ""}</option>`)
       .join("");
     fieldMoveDay.value = ev.date;
     moveDayRow.style.display = "block";
@@ -7765,7 +7804,7 @@ export function mountScheduleView(container, ctx) {
   const swapDayBSelect = container.querySelector("#swapDayB");
 
   function dayOptionLabel(dateStr) {
-    return `${formatMD(dateStr)}（${weekdayLabel(dateStr)}）${dateStr === todayStr ? " · 今天" : ""}`;
+    return `${dayFullLabel(dateStr)}${dateStr === todayStr ? " · 今天" : ""}`;
   }
 
   container.querySelector("#btnSwapDays").addEventListener("click", () => {
@@ -7854,7 +7893,7 @@ export function mountScheduleView(container, ctx) {
       if (movedToOtherDay) {
         touchMemberActivity(tripId, memberId);
         closeSheet();
-        alert(`已移到 ${formatMD(targetDate)}（${weekdayLabel(targetDate)}），排在那天的最後面。`);
+        alert(`已移到 ${dayFullLabel(targetDate)}，排在那天的最後面。`);
         return;
       }
     } else {
@@ -7865,6 +7904,47 @@ export function mountScheduleView(container, ctx) {
     }
     touchMemberActivity(tripId, memberId);
     closeSheet();
+  });
+
+  /* ---------- 備選日 ---------- */
+  // 備選日數量存在旅程文件的 spareDayCount，行程的 date 存成 "spare-N"。
+  // 先樂觀更新畫面，寫入失敗再還原。
+  async function setSpareCount(newCount, extraFields = {}) {
+    const previous = spareCount;
+    spareCount = newCount;
+    days = [...officialDays, ...spareIdsFor(spareCount)];
+    try {
+      await updateDoc(doc(db, "trips", tripId), { spareDayCount: newCount, ...extraFields });
+      return true;
+    } catch (err) {
+      console.error("[更新備選日失敗]", err);
+      spareCount = previous;
+      days = [...officialDays, ...spareIdsFor(spareCount)];
+      alert("更新備選日失敗，請檢查網路連線後再試一次。");
+      return false;
+    }
+  }
+  async function addSpareDay() {
+    const ok = await setSpareCount(spareCount + 1);
+    if (!ok) return;
+    selectedDate = `spare-${spareCount}`;
+    scheduleSelectedDateByTrip[tripId] = selectedDate;
+    renderDateScroll();
+    renderTimeline();
+    updateWeatherCard(selectedDate);
+    dateScrollEl.scrollTo({ left: dateScrollEl.scrollWidth, behavior: "smooth" });
+  }
+  container.querySelector("#btnDeleteSpareDay").addEventListener("click", async () => {
+    if (!isSpareDay(selectedDate)) return;
+    if (!confirm(`確定要刪除「${dayFullLabel(selectedDate)}」嗎？`)) return;
+    const removedId = selectedDate;
+    const ok = await setSpareCount(spareCount - 1, { [`dayNotes.${removedId}`]: deleteField() });
+    if (!ok) return;
+    selectedDate = days[days.length - 1] || null;
+    scheduleSelectedDateByTrip[tripId] = selectedDate;
+    renderDateScroll();
+    renderTimeline();
+    updateWeatherCard(selectedDate);
   });
 
   /* ---------- 當日重點 ---------- */
@@ -7893,7 +7973,7 @@ export function mountScheduleView(container, ctx) {
 
   container.querySelector("#dayNoteCard").addEventListener("click", () => {
     if (!selectedDate) return;
-    container.querySelector("#dayNoteSheetTitle").textContent = `${formatMD(selectedDate)}（${weekdayLabel(selectedDate)}）當日重點`;
+    container.querySelector("#dayNoteSheetTitle").textContent = `${dayFullLabel(selectedDate)} 當日重點`;
     dayNoteInput.value = dayNotes[selectedDate]?.text || "";
     dayNoteOverlay.classList.add("show");
     dayNoteInput.focus();
@@ -7925,6 +8005,15 @@ export function mountScheduleView(container, ctx) {
     doc(db, "trips", tripId),
     (snap) => {
       dayNotes = snap.data()?.dayNotes || {};
+      const newSpareCount = snap.data()?.spareDayCount || 0;
+      if (newSpareCount !== spareCount) {
+        spareCount = newSpareCount;
+        days = [...officialDays, ...spareIdsFor(spareCount)];
+        if (!days.includes(selectedDate)) selectedDate = days[days.length - 1] || null;
+        renderDateScroll();
+        renderTimeline();
+        updateWeatherCard(selectedDate);
+      }
       renderDayNote();
     },
     (err) => console.error("[當日重點監聽失敗]", err)
