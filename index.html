@@ -877,6 +877,7 @@ button, input, textarea {
 .ic-more-icon{ font-size: 11px; color: var(--sage-dark); margin-left: 5px; }
 .ic-people{ display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
 .wish-card .ic-main{ display: block; }
+.wish-parked-tag{ background: var(--earth-light); color: var(--earth-dark); }
 .wish-loc{ font-size: 11.5px; color: var(--sage-dark); margin-top: 4px; display: flex; align-items: center; gap: 5px; }
 .wish-card{ position: relative; overflow: hidden; }
 .wish-stamp{
@@ -5060,6 +5061,7 @@ export function renderPlanningView() {
 
 export function mountPlanningView(container, ctx) {
   const { tripId, memberId, trip, members } = ctx;
+  let eventDateById = {}; // { 行程id: 日期 }，判斷採用的行程是不是被暫放在備選日
   const cleanups = [];
   const memberById = (id) => members.find((m) => m.id === id);
   const isHost = !!memberById(memberId)?.isHost;
@@ -5119,18 +5121,23 @@ export function mountPlanningView(container, ctx) {
         .map((it) => {
           const submitter = memberById(it.submittedBy);
           const hasExtra = !!(it.content || (it.photoUrls && it.photoUrls.length));
-          const adopted = it.status === "adopted";
+          const adoptedRaw = it.status === "adopted";
+          // 採用建立的行程如果被移到備選日（還沒決定排哪天），章印先暫時拿掉，
+          // 等它被排回正式日期，章印會自動回來
+          const parked = adoptedRaw && isSpareDay(eventDateById[it.adoptedEventId]);
+          const adopted = adoptedRaw && !parked;
           return `
             <div class="item-card wish-card" data-item-id="${it.id}">
               ${adopted ? `<div class="wish-stamp">已 採 用</div>` : ""}
               <div class="ic-tags">
                 <span class="ic-tag">${submitter?.name || "?"} 提議</span>
+                ${parked ? `<span class="ic-tag wish-parked-tag"><i class="fa-solid fa-hourglass-half"></i> 暫放備選日</span>` : ""}
               </div>
               <div class="ic-main" data-open-detail="${it.id}">
                 <div class="ic-title">${it.title || "（未命名）"} ${hasExtra ? `<i class="fa-solid ${it.photoUrls?.length ? "fa-image" : "fa-note-sticky"} ic-more-icon" title="有更多內容"></i>` : ""}</div>
                 ${it.placeName || it.googleMapsUrl ? `<div class="wish-loc"><i class="fa-solid fa-location-dot"></i>${it.placeName || "有附 Google 地圖連結"}</div>` : ""}
               </div>
-              ${isHost && !adopted ? `<button class="btn-adopt-wish" data-item-id="${it.id}"><i class="fa-solid fa-calendar-plus"></i> 加入正式行程</button>` : ""}
+              ${isHost && !adoptedRaw ? `<button class="btn-adopt-wish" data-item-id="${it.id}"><i class="fa-solid fa-calendar-plus"></i> 加入正式行程</button>` : ""}
             </div>
           `;
         })
@@ -5439,6 +5446,14 @@ export function mountPlanningView(container, ctx) {
     }
   );
   cleanups.push(unsubscribe);
+
+  // 追蹤每個許願對應行程目前在哪一天，行程被移到備選日或移回來時，章印才能即時跟著變
+  cleanups.push(
+    listenScheduleEvents(tripId, (events) => {
+      eventDateById = Object.fromEntries(events.map((e) => [e.id, e.date]));
+      renderList();
+    })
+  );
 
   /* ---------- 把許願清單的項目「加入正式行程」 ---------- */
   const adoptOverlay = container.querySelector("#adoptWishOverlay");
