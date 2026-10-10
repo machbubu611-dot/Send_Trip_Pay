@@ -5472,7 +5472,20 @@ export function mountPlanningView(container, ctx) {
     btn.textContent = "建立中…";
     try {
       const dayEventsSnap = await getDocs(query(collection(db, "trips", tripId, "schedule"), where("date", "==", date)));
-      const maxOrder = dayEventsSnap.docs.reduce((m, d) => Math.max(m, d.data().order ?? 0), -1);
+      // 依時間插到對的位置（跟行程頁新增行程同一套規則）：插在第一筆時間比它晚的行程前面
+      const dayList = dayEventsSnap.docs
+        .map((d) => ({ id: d.id, ...d.data() }))
+        .sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+      const insertIdx = dayList.findIndex((e) => e.time && e.time > time);
+      const insertAt = insertIdx === -1 ? dayList.length : insertIdx;
+      const prevEv = dayList[insertAt - 1];
+      const nextEv = dayList[insertAt];
+      let newOrder;
+      if (!prevEv && !nextEv) newOrder = 0;
+      else if (!nextEv) newOrder = (prevEv.order ?? 0) + 1;
+      else if (!prevEv) newOrder = (nextEv.order ?? 0) - 1;
+      else newOrder = ((prevEv.order ?? 0) + (nextEv.order ?? 0)) / 2;
+      const needsRenumber = prevEv && nextEv && !(newOrder > (prevEv.order ?? 0) && newOrder < (nextEv.order ?? 0));
       const newEventId = await createScheduleEvent(tripId, {
         date,
         time,
@@ -5481,9 +5494,14 @@ export function mountPlanningView(container, ctx) {
         location: withMapsUrl({}, adoptingItem.googleMapsUrl || ""),
         note: adoptingItem.content || "",
         todos: [],
-        order: maxOrder + 1,
+        order: newOrder,
         createdBy: memberId,
       });
+      if (needsRenumber) {
+        const ids = dayList.map((e) => e.id);
+        ids.splice(insertAt, 0, newEventId);
+        await reorderScheduleEvents(tripId, ids.map((id, i) => ({ id, order: i })));
+      }
       await updatePlanningItem(tripId, adoptingItem.id, { status: "adopted", adoptedEventId: newEventId });
       adoptOverlay.classList.remove("show");
       alert("已經加入正式行程了，去「行程」分頁那一天可以看到。");
@@ -7861,6 +7879,35 @@ export function mountScheduleView(container, ctx) {
     closeSheet();
   });
 
+  /* ---------- 依時間自動排序 ---------- */
+  function sortedDayEvents(date) {
+    return allEvents.filter((e) => e.date === date).sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+  }
+  /**
+   * 決定一筆行程（時間為 time）插進「目前這天的排列」的哪個位置：
+   * 插在第一筆「時間比它晚」的行程前面，沒有的話排最後。
+   * 同一天如果已經被手動拖曳成不是時間順序，這個規則也照樣成立（只看當下排列），
+   * 不會把使用者拖曳好的順序整個重排。
+   * 回傳 order；如果兩筆相鄰行程的 order 剛好沒有空隙放得下，就一併回傳整天重編號用的 id 陣列
+   * （null 代表這筆自己的位置）。
+   */
+  function planTimeInsert(list, time) {
+    const idx = time ? list.findIndex((e) => e.time && e.time > time) : -1;
+    const at = idx === -1 ? list.length : idx;
+    const prev = list[at - 1];
+    const next = list[at];
+    let order;
+    if (!prev && !next) order = 0;
+    else if (!next) order = (prev.order ?? 0) + 1;
+    else if (!prev) order = (next.order ?? 0) - 1;
+    else order = ((prev.order ?? 0) + (next.order ?? 0)) / 2;
+    const noRoom = prev && next && !(order > (prev.order ?? 0) && order < (next.order ?? 0));
+    if (!noRoom) return { order, ids: null };
+    const ids = list.map((e) => e.id);
+    ids.splice(at, 0, null);
+    return { order, ids };
+  }
+
   saveBtn.addEventListener("click", async () => {
     if (!selectedCategory) {
       alert("請選擇大分類");
@@ -7883,24 +7930,36 @@ export function mountScheduleView(container, ctx) {
     };
 
     if (editingEventId) {
+      const original = allEvents.find((e) => e.id === editingEventId);
       const movedToOtherDay = targetDate !== editingEventOriginalDate;
-      if (movedToOtherDay) {
-        // 移到別天：排在那一天的最後面，之後想調順序再拖曳
-        const targetDayEvents = allEvents.filter((e) => e.date === targetDate);
-        payload.order = targetDayEvents.reduce((m, e) => Math.max(m, e.order ?? 0), -1) + 1;
+      const timeChanged = (original?.time || "") !== (payload.time || "");
+      let renumberIds = null;
+      if (movedToOtherDay || timeChanged) {
+        // 換了時間（或移到別天）：依新的時間自動插到對的位置。
+        // 沒動時間也沒換天就不碰順序，保留之前手動拖曳排好的結果。
+        const others = sortedDayEvents(targetDate).filter((e) => e.id !== editingEventId);
+        const plan = planTimeInsert(others, payload.time);
+        payload.order = plan.order;
+        renumberIds = plan.ids;
       }
       await updateScheduleEvent(tripId, editingEventId, payload);
+      if (renumberIds) {
+        await reorderScheduleEvents(tripId, renumberIds.map((id, i) => ({ id: id ?? editingEventId, order: i })));
+      }
       if (movedToOtherDay) {
         touchMemberActivity(tripId, memberId);
         closeSheet();
-        alert(`已移到 ${dayFullLabel(targetDate)}，排在那天的最後面。`);
+        alert(`已移到 ${dayFullLabel(targetDate)}，並依時間排進那天的行程裡。`);
         return;
       }
     } else {
-      const dayEvents = allEvents.filter((e) => e.date === selectedDate);
-      const maxOrder = dayEvents.reduce((m, e) => Math.max(m, e.order ?? 0), -1);
-      payload.order = maxOrder + 1;
-      await createScheduleEvent(tripId, payload);
+      // 新增：依這筆的時間插到對的位置，不是一律排最後面；之後使用者拖曳過就照拖曳的順序
+      const plan = planTimeInsert(sortedDayEvents(selectedDate), payload.time);
+      payload.order = plan.order;
+      const newId = await createScheduleEvent(tripId, payload);
+      if (plan.ids) {
+        await reorderScheduleEvents(tripId, plan.ids.map((id, i) => ({ id: id ?? newId, order: i })));
+      }
     }
     touchMemberActivity(tripId, memberId);
     closeSheet();
