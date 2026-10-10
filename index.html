@@ -1535,6 +1535,41 @@ export async function reorderScheduleEvents(tripId, updates) {
 }
 
 /**
+ * 刪除第 n 個備選日（連同裡面的行程），後面的備選日編號往前補上。
+ * 例如有備選 1、2、3，刪掉 2：原本備選 3 的行程變成備選 2，備選日總數少一個。
+ * 行程、當日重點、備選日總數放在同一個批次寫入，要嘛全成功、要嘛全沒動，
+ * 不會出現「行程刪了但數量沒變」這種半套狀態。
+ * @param {string} tripId
+ * @param {number} n 要刪的備選日編號（從 1 開始）
+ * @param {{events:Array, dayNotes:Object, spareCount:number}} state 目前的行程、當日重點、備選日總數
+ * @returns {Promise<number>} 一併刪除的行程筆數
+ */
+export async function deleteSpareDayAndShift(tripId, n, { events, dayNotes, spareCount }) {
+  const doomed = events.filter((e) => e.date === `spare-${n}`);
+  // 被刪掉的行程如果是從許願採用的，許願要打回「尚未採用」
+  for (const ev of doomed) await revertWishlistAdoptionsForEvent(tripId, ev.id);
+
+  const batch = writeBatch(db);
+  doomed.forEach((ev) => batch.delete(doc(db, "trips", tripId, "schedule", ev.id)));
+  events.forEach((ev) => {
+    if (!isSpareDay(ev.date)) return;
+    const k = spareDayNumber(ev.date);
+    if (k > n) batch.update(doc(db, "trips", tripId, "schedule", ev.id), { date: `spare-${k - 1}`, updatedAt: serverTimestamp() });
+  });
+
+  const tripUpdate = { spareDayCount: spareCount - 1 };
+  for (let k = n; k < spareCount; k++) {
+    const next = dayNotes?.[`spare-${k + 1}`];
+    tripUpdate[`dayNotes.spare-${k}`] = next ?? deleteField();
+  }
+  tripUpdate[`dayNotes.spare-${spareCount}`] = deleteField();
+  batch.update(doc(db, "trips", tripId), tripUpdate);
+
+  await batch.commit();
+  return doomed.length;
+}
+
+/**
  * 把兩個日期的整天行程直接對調（例如因為天氣考量，想把兩天的排程互換）。
  * 做法：把 dateA 那天的所有事件的 date 改成 dateB，dateB 那天的改成 dateA，
  * 時間、待辦、地點等其他欄位都原封不動——單純只是換了「哪一天要做這些事」。
@@ -7635,12 +7670,8 @@ export function mountScheduleView(container, ctx) {
   function renderTimeline() {
     const dayIndex = officialDays.indexOf(selectedDate) + 1;
     sectionLabelEl.textContent = isSpareDay(selectedDate) ? `備選日 ${spareDayNumber(selectedDate)} 行程` : `Day ${dayIndex} 行程`;
-    // 只有「最後一個、而且是空的」備選日可以刪，避免刪到中間造成編號錯亂或誤刪行程
-    const canDeleteSpare =
-      isSpareDay(selectedDate) &&
-      spareDayNumber(selectedDate) === spareCount &&
-      !allEvents.some((e) => e.date === selectedDate);
-    container.querySelector("#btnDeleteSpareDay").style.display = canDeleteSpare ? "flex" : "none";
+    // 備選日隨時可以刪（裡面有行程的話，刪除前會先跟使用者確認）
+    container.querySelector("#btnDeleteSpareDay").style.display = isSpareDay(selectedDate) ? "flex" : "none";
     renderDayNote(); // 換日期、對調、行程更新時，當日重點跟著切到對應那天
 
     const events = allEvents
@@ -8068,15 +8099,34 @@ export function mountScheduleView(container, ctx) {
   }
   container.querySelector("#btnDeleteSpareDay").addEventListener("click", async () => {
     if (!isSpareDay(selectedDate)) return;
-    if (!confirm(`確定要刪除「${dayFullLabel(selectedDate)}」嗎？`)) return;
-    const removedId = selectedDate;
-    const ok = await setSpareCount(spareCount - 1, { [`dayNotes.${removedId}`]: deleteField() });
-    if (!ok) return;
-    selectedDate = days[days.length - 1] || null;
-    scheduleSelectedDateByTrip[tripId] = selectedDate;
-    renderDateScroll();
-    renderTimeline();
-    updateWeatherCard(selectedDate);
+    const n = spareDayNumber(selectedDate);
+    const label = dayFullLabel(selectedDate);
+    const dayEvents = allEvents.filter((e) => e.date === selectedDate);
+    const message = dayEvents.length
+      ? `「${label}」裡有 ${dayEvents.length} 則行程，刪除備選日會連同這些行程一起刪除，無法復原。\n\n確定要刪除嗎？`
+      : `確定要刪除「${label}」嗎？`;
+    if (!confirm(message)) return;
+    const btn = container.querySelector("#btnDeleteSpareDay");
+    btn.disabled = true;
+    try {
+      await deleteSpareDayAndShift(tripId, n, { events: allEvents, dayNotes, spareCount });
+      // 先在本機同步更新畫面，不用等即時推播回來才換
+      allEvents = allEvents
+        .filter((e) => e.date !== `spare-${n}`)
+        .map((e) => (isSpareDay(e.date) && spareDayNumber(e.date) > n ? { ...e, date: `spare-${spareDayNumber(e.date) - 1}` } : e));
+      spareCount -= 1;
+      days = [...officialDays, ...spareIdsFor(spareCount)];
+      selectedDate = n > 1 ? `spare-${n - 1}` : officialDays[officialDays.length - 1] || days[0] || null;
+      scheduleSelectedDateByTrip[tripId] = selectedDate;
+      renderDateScroll();
+      renderTimeline();
+      updateWeatherCard(selectedDate);
+    } catch (err) {
+      console.error("[刪除備選日失敗]", err);
+      alert("刪除失敗，請檢查網路連線後再試一次。");
+    } finally {
+      btn.disabled = false;
+    }
   });
 
   /* ---------- 當日重點 ---------- */
