@@ -564,6 +564,9 @@ button, input, textarea {
 .t-done-btn{ position: absolute; top: 10px; right: 10px; width: 28px; height: 28px; border-radius: 50%; border: 2px solid var(--sage); background: transparent; color: transparent; display: flex; align-items: center; justify-content: center; font-size: 13px; cursor: pointer; padding: 0; }
 .t-done-btn:active{ transform: scale(0.9); }
 .t-done-btn.done{ background: var(--ok); border-color: var(--ok); color: var(--white); }
+.time-picker{ display: flex; align-items: center; gap: 4px; }
+.time-picker select{ flex: 1; min-width: 0; margin-bottom: 0; padding-left: 8px; padding-right: 4px; }
+.time-picker .tp-colon{ font-weight: 700; color: var(--ink-soft); }
 .t-done-tag{ display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; font-size: 10.5px; color: var(--ok); font-weight: 700; }
 .t-cat{ display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 8px; color: var(--white); font-family: var(--font-heading); margin-bottom: 6px; }
 .t-card .t-title{ font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
@@ -5055,7 +5058,7 @@ export function renderPlanningView() {
         <label class="field-label">選哪一天</label>
         <select class="text-input" id="adoptWishDate"></select>
         <label class="field-label">時間</label>
-        <input type="time" class="text-input" id="adoptWishTime" value="10:00">
+        ${timePickerHtml("adoptWishTime")}
         <div class="btn-row">
           <button class="btn btn-outline" id="btnCancelAdoptWish">取消</button>
           <button class="btn btn-primary primary-weight" id="btnConfirmAdoptWish">建立行程</button>
@@ -5464,7 +5467,7 @@ export function mountPlanningView(container, ctx) {
   /* ---------- 把許願清單的項目「加入正式行程」 ---------- */
   const adoptOverlay = container.querySelector("#adoptWishOverlay");
   const adoptDateSelect = container.querySelector("#adoptWishDate");
-  const adoptTimeInput = container.querySelector("#adoptWishTime");
+  const adoptTimeInput = wireTimePicker(container.querySelector("#adoptWishTime"));
   let adoptingItem = null;
 
   function openAdoptWishSheet(it) {
@@ -7309,6 +7312,43 @@ function isoDateRange(start, end) {
   }
   return dates;
 }
+/* ==================== 15 分鐘為單位的時間選擇器 ====================
+ * 原生的 <input type="time"> 在 iPhone 上不管 step 設定，分鐘還是一分一格，
+ * 改用「時」「分」兩個下拉選單，分鐘只有 00 / 15 / 30 / 45。
+ * wireTimePicker 回傳的物件跟原本 input 一樣有 .value（"HH:MM"）可讀可寫，
+ * 其他程式碼不用改。舊資料如果分鐘不是 15 的倍數（例如 10:07），會暫時多一個選項保留，
+ * 沒有動它就不會被改掉。 */
+function timePickerHtml(id) {
+  const hours = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, "0"))
+    .map((h) => `<option value="${h}">${h}</option>`)
+    .join("");
+  const mins = ["00", "15", "30", "45"].map((m) => `<option value="${m}">${m}</option>`).join("");
+  return `<div class="time-picker" id="${id}"><select class="text-input tp-h">${hours}</select><span class="tp-colon">:</span><select class="text-input tp-m">${mins}</select></div>`;
+}
+function wireTimePicker(rootEl) {
+  const hSel = rootEl.querySelector(".tp-h");
+  const mSel = rootEl.querySelector(".tp-m");
+  const picker = {
+    get value() {
+      return `${hSel.value}:${mSel.value}`;
+    },
+    set value(v) {
+      const [hh, mm] = (v || "10:00").split(":");
+      hSel.value = String(hh).padStart(2, "0");
+      [...mSel.options].slice(4).forEach((o) => o.remove());
+      if (!["00", "15", "30", "45"].includes(mm)) {
+        const opt = document.createElement("option");
+        opt.value = mm;
+        opt.textContent = mm;
+        mSel.appendChild(opt);
+      }
+      mSel.value = mm;
+    },
+  };
+  picker.value = "10:00";
+  return picker;
+}
+
 /* 備選日：不是真的日期，是行程頁最後面幾個「暫放整天行程」的格子，
  * 事件的 date 欄位存成 "spare-1"、"spare-2"…，排到正式日期後可以再移進去。 */
 function isSpareDay(dateStr) {
@@ -7417,7 +7457,7 @@ export function renderScheduleView() {
         <div class="hotel-quickpick" id="hotelQuickpick"></div>
 
         <div class="time-row">
-          <div><label class="field-label">時間</label><input type="time" class="text-input" id="fieldTime" value="10:00"></div>
+          <div><label class="field-label">時間</label>${timePickerHtml("fieldTime")}</div>
           <div><label class="field-label">行程名稱</label><input type="text" class="text-input" id="fieldTitle" placeholder="例如：白色戀人公園"></div>
         </div>
 
@@ -7483,7 +7523,7 @@ export function mountScheduleView(container, ctx) {
   const sheetOverlay = container.querySelector("#eventSheetOverlay");
   const catPicker = container.querySelector("#catPicker");
   const hotelQuickpick = container.querySelector("#hotelQuickpick");
-  const fieldTime = container.querySelector("#fieldTime");
+  const fieldTime = wireTimePicker(container.querySelector("#fieldTime"));
   const fieldTitle = container.querySelector("#fieldTitle");
   const fieldMapsUrl = container.querySelector("#fieldMapsUrl");
   wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"), container.querySelector("#fieldMapsNameHint"));
