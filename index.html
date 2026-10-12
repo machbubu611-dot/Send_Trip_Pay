@@ -5061,6 +5061,12 @@ export function renderPlanningView() {
         <input type="text" class="text-input" id="planTitle" placeholder="例如：申請日本 eSIM 上網卡">
 
         <div id="planWishlistFields" style="display:none;">
+          <label class="field-label">分類</label>
+          <div class="cat-picker" id="planWishCatPicker" style="grid-template-columns: repeat(3, 1fr);">
+            ${["spot", "shopping", "food"]
+              .map((key) => `<div class="cat-opt" data-cat="${key}"><i class="fa-solid ${CATEGORY_META[key].icon}"></i>${CATEGORY_META[key].label}</div>`)
+              .join("")}
+          </div>
           <label class="field-label">Google 地圖連結</label>
           <div class="loc-input-row">
             <input type="text" class="text-input" id="planMapsUrl" placeholder="貼上想去的地點連結">
@@ -5183,6 +5189,7 @@ export function mountPlanningView(container, ctx) {
               ${adopted ? `<div class="wish-stamp">已 採 用</div>` : ""}
               <div class="ic-tags">
                 <span class="ic-tag">${submitter?.name || "?"} 提議</span>
+                <span class="ic-tag" style="background:var(${(CATEGORY_META[it.wishCategory] || CATEGORY_META.spot).cssVar}); color:var(--white);">${(CATEGORY_META[it.wishCategory] || CATEGORY_META.spot).label}</span>
                 ${parked ? `<span class="ic-tag wish-parked-tag"><i class="fa-solid fa-hourglass-half"></i> 暫放備選日</span>` : ""}
               </div>
               <div class="ic-main" data-open-detail="${it.id}">
@@ -5365,6 +5372,23 @@ export function mountPlanningView(container, ctx) {
   const wishlistFields = container.querySelector("#planWishlistFields");
   const planMapsUrlInput = container.querySelector("#planMapsUrl");
   wireMapsLinkButton(planMapsUrlInput, container.querySelector("#btnOpenPlanMaps"), container.querySelector("#planMapsNameHint"));
+  // 許願的分類（採用後會變成行程的分類）：景點 / 購物 / 美食
+  let selectedWishCat = "spot";
+  const wishCatPicker = container.querySelector("#planWishCatPicker");
+  function renderWishCatPicker() {
+    wishCatPicker.querySelectorAll(".cat-opt").forEach((opt) => {
+      const on = opt.dataset.cat === selectedWishCat;
+      opt.classList.toggle("selected", on);
+      opt.style.background = on ? `var(${CATEGORY_META[opt.dataset.cat].cssVar})` : "";
+      opt.style.color = on ? "var(--white)" : "";
+    });
+  }
+  wishCatPicker.querySelectorAll(".cat-opt").forEach((opt) => {
+    opt.addEventListener("click", () => {
+      selectedWishCat = opt.dataset.cat;
+      renderWishCatPicker();
+    });
+  });
   const linkFields = container.querySelector("#planLinkFields");
   const planLinkUrlInput = container.querySelector("#planLinkUrl");
   wireLinkButton(planLinkUrlInput, container.querySelector("#btnOpenPlanLink"));
@@ -5382,6 +5406,8 @@ export function mountPlanningView(container, ctx) {
     planMapsUrlInput.dispatchEvent(new Event("input"));
     planLinkUrlInput.value = "";
     planLinkUrlInput.dispatchEvent(new Event("input"));
+    selectedWishCat = "spot";
+    renderWishCatPicker();
     selectedAssignees = activePerson === "all" ? members.map((m) => m.id) : [activePerson];
     container.querySelector("#planSheetTitle").textContent = isWishlist ? "新增許願" : isLink ? "新增連結" : `新增${TYPE_META[activeType].label}`;
     deleteBtn.style.display = "none";
@@ -5406,6 +5432,8 @@ export function mountPlanningView(container, ctx) {
     planMapsUrlInput.dispatchEvent(new Event("input"));
     planLinkUrlInput.value = it.url || "";
     planLinkUrlInput.dispatchEvent(new Event("input"));
+    selectedWishCat = it.wishCategory && CATEGORY_META[it.wishCategory] ? it.wishCategory : "spot";
+    renderWishCatPicker();
     selectedAssignees = [...(it.assigneeIds || [])];
     container.querySelector("#planSheetTitle").textContent = isWishlist ? "編輯許願" : isLink ? "編輯連結" : `編輯${TYPE_META[it.type].label}`;
     deleteBtn.style.display = (isWishlist || isLink) && !isHost && it.createdBy !== memberId ? "none" : "block";
@@ -5457,7 +5485,7 @@ export function mountPlanningView(container, ctx) {
       const photoUrls = [...existingPhotoUrls, ...uploadedUrls];
       const basePayload = { title, content: container.querySelector("#planContent").value.trim(), photoUrls };
       const payload = isWishlist
-        ? withMapsUrl(basePayload, planMapsUrlInput.value)
+        ? withMapsUrl({ ...basePayload, wishCategory: selectedWishCat }, planMapsUrlInput.value)
         : isLink
         ? { ...basePayload, url: planLinkUrlInput.value.trim() }
         : { ...basePayload, assigneeIds: selectedAssignees };
@@ -5556,7 +5584,7 @@ export function mountPlanningView(container, ctx) {
       const newEventId = await createScheduleEvent(tripId, {
         date,
         time,
-        category: "spot",
+        category: CATEGORY_META[adoptingItem.wishCategory] ? adoptingItem.wishCategory : "spot",
         title: adoptingItem.title,
         location: withMapsUrl({}, adoptingItem.googleMapsUrl || ""),
         note: adoptingItem.content || "",
@@ -7373,6 +7401,7 @@ const CATEGORY_META = {
   transit: { label: "交通", icon: "fa-bus", cssVar: "--cat-transit" },
   spot: { label: "景點", icon: "fa-mountain-sun", cssVar: "--cat-spot" },
   food: { label: "美食", icon: "fa-utensils", cssVar: "--cat-food" },
+  shopping: { label: "購物", icon: "fa-bag-shopping", cssVar: "--cat-shop" },
   stay: { label: "住宿", icon: "fa-bed", cssVar: "--cat-stay" },
 };
 const WEEKDAY_LABELS = ["日", "一", "二", "三", "四", "五", "六"];
@@ -7526,7 +7555,7 @@ export function renderScheduleView() {
         <h3 class="sheet-title" id="eventSheetTitle">新增行程</h3>
 
         <label class="field-label">大分類</label>
-        <div class="cat-picker" id="catPicker">
+        <div class="cat-picker" id="catPicker" style="grid-template-columns: repeat(5, 1fr); gap: 6px;">
           ${Object.entries(CATEGORY_META)
             .map(([key, meta]) => `<div class="cat-opt" data-cat="${key}"><i class="fa-solid ${meta.icon}"></i>${meta.label}</div>`)
             .join("")}
