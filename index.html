@@ -557,8 +557,9 @@ button, input, textarea {
 
 .timeline{ padding-bottom: 4px; }
 .t-item{ display: flex; gap: 10px; margin-bottom: 12px; align-items: stretch; }
-.t-item.dragging{ opacity: 0.55; }
-.t-item.dragging .t-card{ box-shadow: var(--shadow-lg); }
+.t-item.t-ghost{ opacity: 0.35; }
+.t-item.t-chosen .t-card{ box-shadow: var(--shadow-lg); }
+.t-item.t-fallback{ opacity: 0.95; z-index: 9999; pointer-events: none; box-shadow: var(--shadow-lg); border-radius: 18px; background: var(--cream); }
 .t-drag{ display: flex; align-items: center; justify-content: center; width: 30px; margin-left: -6px; color: var(--sage); cursor: grab; font-size: 17px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .t-time{ width: 40px; flex: 0 0 auto; font-size: 12px; color: var(--ink-soft); padding-top: 14px; font-weight: 500; }
 .t-card{ flex: 1; background: var(--white); border-radius: 18px; padding: 12px 44px 12px 14px; box-shadow: var(--shadow-sm); cursor: pointer; min-width: 0; position: relative; }
@@ -920,6 +921,9 @@ button, input, textarea {
 <body>
 
   <div id="app-root"></div>
+
+  <!-- 行程拖曳排序用（SortableJS，手機觸控上的拖曳已經有很多人驗證過，比自己寫的穩定） -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.2/Sortable.min.js"></script>
 
   <script type="module">
 // ============================================================
@@ -7588,7 +7592,6 @@ export function mountScheduleView(container, ctx) {
   let editingEventId = null;
   let sheetTodos = [];
   let selectedCategory = null;
-  let dragEl = null;
 
   const dateScrollEl = container.querySelector("#dateScroll");
   enableDragScroll(dateScrollEl);
@@ -7706,9 +7709,11 @@ export function mountScheduleView(container, ctx) {
     }
   }
 
-  let timelineRenderId = 0; // 每次重畫行程列表就 +1，讓還在跑的拖曳知道「畫面已經換了」
   function renderTimeline() {
-    timelineRenderId++;
+    if (sorting) {
+      pendingRender = true;
+      return;
+    }
     const dayIndex = officialDays.indexOf(selectedDate) + 1;
     sectionLabelEl.textContent = isSpareDay(selectedDate) ? `備選日 ${spareDayNumber(selectedDate)} 行程` : `Day ${dayIndex} 行程`;
     // 備選日隨時可以刪（裡面有行程的話，刪除前會先跟使用者確認）
@@ -7765,98 +7770,52 @@ export function mountScheduleView(container, ctx) {
           window.open(icon.dataset.navUrl, "_blank", "noopener");
         });
       });
-      wireDragHandle(item);
     });
   }
 
   /* ---------- 拖曳調整順序 ----------
-   * 原本用瀏覽器內建的 HTML5 拖放，手機上幾乎不能用，所以改成 Pointer Events 自己處理，
-   * 只在左邊的把手（三條線）上啟動。
-   *
-   * 上一版有幾個嚴重問題，這版一併修掉：
-   *  1. 一按到把手就立刻進入拖曳，太敏感——現在要手指在把手上移動超過 8px 才算開始拖。
-   *  2. 如果手指放開的事件被瀏覽器吃掉（例如頁面正在捲動），拖曳迴圈會一直跑下去，
-   *     每一幀都把那張行程塞回畫面，造成「殘影」，切換到別天之後上一天的行程還會
-   *     冒出來。現在每次重畫行程列表都會換一個編號，拖曳迴圈偵測到編號不一樣
-   *     （或那張卡片已經不在畫面上）就立刻自己停掉。
-   *  3. 手指被瀏覽器接管（pointercancel）時，直接把列表還原成資料庫裡的順序，不會留半套。 */
-  function wireDragHandle(item) {
-    const handle = item.querySelector(".t-drag");
-    let st = null;
-
-    function moveDragged() {
-      const after = getDragAfterElement(timelineEl, st.lastY);
-      if (after == null) timelineEl.appendChild(item);
-      else timelineEl.insertBefore(item, after);
-    }
-    function loop() {
-      if (!st) return;
-      if (st.renderId !== timelineRenderId || !item.isConnected) {
-        stop(false);
-        return;
-      }
-      const edge = 90;
-      if (st.lastY < edge) window.scrollBy(0, -12);
-      else if (st.lastY > window.innerHeight - edge) window.scrollBy(0, 12);
-      moveDragged();
-      st.raf = requestAnimationFrame(loop);
-    }
-    function stop(commit) {
-      if (!st) return;
-      const s = st;
-      st = null;
-      cancelAnimationFrame(s.raf);
-      if (dragEl === item) dragEl = null;
-      item.classList.remove("dragging");
-      try { handle.releasePointerCapture(s.pointerId); } catch (_) {}
-      if (!s.started) return;
-      if (commit && s.renderId === timelineRenderId && item.isConnected) {
-        const idsAfter = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
-        if (idsAfter.join() !== s.idsBefore.join()) commitReorder();
-      } else if (s.renderId === timelineRenderId) {
-        renderTimeline(); // 被中斷：還原成資料庫裡的順序
-      }
-    }
-
-    handle.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      st = {
-        startY: e.clientY,
-        lastY: e.clientY,
-        started: false,
-        pointerId: e.pointerId,
-        renderId: timelineRenderId,
-        idsBefore: [],
-        raf: null,
-      };
-      handle.setPointerCapture(e.pointerId);
-    });
-    handle.addEventListener("pointermove", (e) => {
-      if (!st) return;
-      st.lastY = e.clientY;
-      if (!st.started && Math.abs(e.clientY - st.startY) > 8) {
-        st.started = true;
-        dragEl = item;
-        st.idsBefore = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
-        item.classList.add("dragging");
-        st.raf = requestAnimationFrame(loop);
-      }
-    });
-    handle.addEventListener("pointerup", () => stop(true));
-    handle.addEventListener("pointercancel", () => stop(false));
-    handle.addEventListener("lostpointercapture", () => stop(true));
-  }
-  function getDragAfterElement(container_, y) {
-    const items = [...container_.querySelectorAll(".t-item:not(.dragging)")];
-    return items.reduce(
-      (closest, child) => {
-        const box = child.getBoundingClientRect();
-        const offset = y - box.top - box.height / 2;
-        return offset < 0 && offset > closest.offset ? { offset, element: child } : closest;
+   * 前兩版自己用 HTML5 拖放、Pointer Events 手刻，在 iPhone 上都有狀況（太敏感、殘影、
+   * 放手事件被吃掉之後拖曳卡住，下次點別的地方又自己拖過去）。
+   * 這版改用 SortableJS——手機觸控拖曳排序最常用的套件，這些邊角狀況它都處理過了：
+   *  - 只有按住左邊的把手才會拖，而且要按住約 0.15 秒才啟動，輕點或滑動頁面不會誤觸
+   *  - 拖曳時有一個跟著手指走的複製卡片，原位置留一個淡淡的空位，不會有殘影
+   *  - 拖到畫面邊緣會自動捲動
+   * 拖曳進行中如果剛好有別人的更新要重畫列表，會先等這次拖完再畫，避免畫面被抽掉。 */
+  let sorting = false;
+  let pendingRender = false;
+  let sortable = null;
+  if (window.Sortable) {
+    sortable = window.Sortable.create(timelineEl, {
+      draggable: ".t-item",
+      handle: ".t-drag",
+      animation: 150,
+      delay: 150,
+      delayOnTouchOnly: true,
+      touchStartThreshold: 5,
+      forceFallback: true,
+      fallbackOnBody: true,
+      fallbackTolerance: 3,
+      ghostClass: "t-ghost",
+      chosenClass: "t-chosen",
+      fallbackClass: "t-fallback",
+      scroll: true,
+      scrollSensitivity: 90,
+      scrollSpeed: 14,
+      bubbleScroll: true,
+      onStart: () => {
+        sorting = true;
       },
-      { offset: -Infinity }
-    ).element;
+      onEnd: (evt) => {
+        sorting = false;
+        if (evt.oldIndex !== evt.newIndex) commitReorder();
+        else if (pendingRender) renderTimeline();
+        pendingRender = false;
+      },
+    });
+  } else {
+    console.warn("[行程拖曳] SortableJS 沒載入成功，暫時無法拖曳排序");
   }
+
   async function commitReorder() {
     // 只處理「目前選的這一天」的行程，避免殘留的其他天卡片被連帶寫進順序
     const todayIds = new Set(allEvents.filter((e) => e.date === selectedDate).map((e) => e.id));
@@ -8331,6 +8290,7 @@ export function mountScheduleView(container, ctx) {
   return () => {
     unsubscribe();
     unsubscribeTrip();
+    sortable?.destroy();
   };
 }
 // router.js
