@@ -6269,10 +6269,14 @@ export async function mountCircleView(container) {
   if (isAnonymous) {
     upgradeCard.className = "account-upgrade-card";
     upgradeCard.innerHTML = `
-      <div><b>還沒設定登入帳號</b><br>設定後才能在手機加入主畫面等獨立環境裡看到這份朋友圈</div>
-      <button class="btn btn-primary primary-weight" id="btnOpenUpgrade">設定</button>
+      <div><b>這台裝置還沒登入帳號</b><br>如果你在別台裝置已經設定過帳號，點「登入」就能看到原本的旅程和朋友圈；第一次設定才用「設定」</div>
+      <div style="display:flex; flex-direction:column; gap:6px; flex:0 0 auto;">
+        <button class="btn btn-primary primary-weight" id="btnGotoLoginFromCircle">登入</button>
+        <button class="btn btn-outline" id="btnOpenUpgrade">設定</button>
+      </div>
     `;
     container.querySelector("#btnOpenUpgrade").addEventListener("click", () => upgradeSheet.classList.add("show"));
+    container.querySelector("#btnGotoLoginFromCircle").addEventListener("click", () => gotoRoute("#/claim", null));
   } else {
     upgradeCard.className = "account-upgrade-card is-ok";
     upgradeCard.innerHTML = `<div><b>已設定登入帳號</b><br>${auth.currentUser.email}</div>`;
@@ -6301,7 +6305,8 @@ export async function mountCircleView(container) {
     } catch (err) {
       console.error("[帳號升級失敗]", err);
       if (err.code === "auth/email-already-in-use") {
-        errorEl.textContent = "這個信箱已經被用過了，換一個試試。";
+        errorEl.innerHTML = `這個信箱已經設定過帳號了。如果就是你自己的帳號，不用重新設定，請改用「登入」。<button class="btn btn-outline" id="btnUpgradeGotoLogin" type="button" style="margin-top:8px; width:100%;">改用登入</button>`;
+        errorEl.querySelector("#btnUpgradeGotoLogin").addEventListener("click", () => gotoRoute("#/claim", null));
       } else if (err.code === "auth/weak-password") {
         errorEl.textContent = "密碼太簡單，換一組再試試。";
       } else {
