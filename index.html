@@ -477,6 +477,8 @@ button, input, textarea {
 .trip-date{ font-size: 12px; color: var(--ink-soft); margin-top: 3px; }
 .trip-bottom{ display: flex; justify-content: space-between; align-items: center; }
 .tl-fab{ position: fixed; bottom: 24px; left: 22px; right: 22px; max-width: 436px; margin: 0 auto; display: flex; align-items: center; justify-content: center; gap: 8px; }
+.link-btn{ background: none; border: none; color: var(--earth-dark); font-size: 13px; padding: 6px 2px; cursor: pointer; text-decoration: underline; }
+.link-btn:disabled{ opacity: 0.5; }
 .tl-login-banner{ background: var(--sage-light); border-radius: 16px; padding: 16px; margin: 0 0 90px; text-align: center; }
 .tl-login-banner p{ font-size: 12.5px; color: var(--ink); margin-bottom: 12px; }
 .tl-login-banner button{ width: 100%; }
@@ -962,6 +964,7 @@ import {
   signOut,
   EmailAuthProvider,
   linkWithCredential,
+  sendPasswordResetEmail,
 } from "https://www.gstatic.com/firebasejs/10.7.0/firebase-auth.js";
 
 // state.js
@@ -6499,6 +6502,11 @@ export function renderClaimView() {
       <input type="password" class="text-input" id="loginPassword" placeholder="密碼" autocomplete="current-password">
       <div id="claimError" style="color:var(--warn); font-size:12.5px; margin-bottom:10px; display:none;"></div>
       <button class="btn btn-primary primary-weight" id="btnLoginSubmit" style="width:100%;">登入</button>
+      <div style="display:flex; justify-content:space-between; margin-top:16px; font-size:13px;">
+        <button type="button" class="link-btn" id="btnLoginBack"><i class="fa-solid fa-arrow-left"></i> 返回旅程列表</button>
+        <button type="button" class="link-btn" id="btnForgotPassword">忘記密碼？</button>
+      </div>
+      <div id="claimInfo" style="color:var(--ok); font-size:12.5px; margin-top:12px; display:none;"></div>
     </div>
   `;
 }
@@ -6546,6 +6554,31 @@ export async function mountClaimView(container) {
       }
     });
   } else {
+    container.querySelector("#btnLoginBack").addEventListener("click", () => gotoRoute("#/trips", null));
+    container.querySelector("#btnForgotPassword").addEventListener("click", async () => {
+      const email = container.querySelector("#loginEmail").value.trim();
+      const infoEl = container.querySelector("#claimInfo");
+      errorEl.style.display = "none";
+      infoEl.style.display = "none";
+      if (!email) {
+        showError("請先在上面填入你的信箱，再按「忘記密碼」");
+        return;
+      }
+      const btn = container.querySelector("#btnForgotPassword");
+      btn.disabled = true;
+      try {
+        auth.languageCode = "zh-TW";
+        await sendPasswordResetEmail(auth, email);
+        // 不管這個信箱有沒有註冊過，都顯示一樣的訊息，避免被拿來探測誰有帳號
+        infoEl.textContent = `如果 ${email} 有註冊過，重設密碼的信已經寄出了。請到信箱收信（沒看到的話也找一下垃圾郵件匣），點信裡的連結設定新密碼，再回來登入。`;
+        infoEl.style.display = "block";
+      } catch (err) {
+        console.error("[寄送重設密碼信失敗]", err);
+        showError(err.code === "auth/invalid-email" ? "信箱格式不太對，再確認一次。" : "寄送失敗，請檢查網路連線後再試一次。");
+      } finally {
+        btn.disabled = false;
+      }
+    });
     container.querySelector("#btnLoginSubmit").addEventListener("click", async () => {
       const email = container.querySelector("#loginEmail").value.trim();
       const password = container.querySelector("#loginPassword").value;
