@@ -571,6 +571,7 @@ button, input, textarea {
 .time-picker{ display: flex; align-items: center; gap: 4px; }
 .time-picker select{ flex: 1; min-width: 0; margin-bottom: 0; padding-left: 8px; padding-right: 4px; }
 .time-picker .tp-colon{ font-weight: 700; color: var(--ink-soft); }
+.t-booked-tag{ display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; font-size: 10.5px; color: var(--earth-dark); font-weight: 700; background: var(--earth-light); border-radius: 8px; padding: 2px 7px; }
 .t-done-tag{ display: inline-flex; align-items: center; gap: 3px; margin-left: 6px; font-size: 10.5px; color: var(--ok); font-weight: 700; }
 .t-cat{ display: inline-block; font-size: 10px; padding: 2px 9px; border-radius: 8px; color: var(--white); font-family: var(--font-heading); margin-bottom: 6px; }
 .t-card .t-title{ font-size: 14px; font-weight: 500; display: flex; align-items: center; gap: 6px; }
@@ -1362,7 +1363,7 @@ export async function duplicateTripCore(sourceTripId, hostUid, hostName, hostAva
     }
   };
 
-  await copyCollection("schedule", { done: false, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
+  await copyCollection("schedule", { done: false, booked: false, createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
   await copyCollection("hotels", { createdAt: serverTimestamp(), updatedAt: serverTimestamp() });
   await copyCollection("flights", { createdAt: serverTimestamp() });
   await copyCollection("carRentals", { createdAt: serverTimestamp() });
@@ -7580,6 +7581,11 @@ export function renderScheduleView() {
         </div>
         <p class="field-hint" id="fieldMapsNameHint"></p>
 
+        <label class="private-expense-row" style="margin:0 0 16px;">
+          <input type="checkbox" id="fieldBooked">
+          <span><i class="fa-solid fa-ticket"></i> 已預約（票或位子已經訂好、付好錢了，行程卡片上會顯示「已預約」）</span>
+        </label>
+
         <label class="field-label">待辦事項 <span style="font-weight:400;color:var(--ink-soft);">· 純備忘</span></label>
         <div class="todo-list" id="todoList"></div>
         <button class="btn-dashed" id="btnAddTodo" style="margin-bottom:16px;"><i class="fa-solid fa-plus"></i> 新增待辦</button>
@@ -7631,6 +7637,7 @@ export function mountScheduleView(container, ctx) {
   const hotelQuickpick = container.querySelector("#hotelQuickpick");
   const fieldTime = wireTimePicker(container.querySelector("#fieldTime"));
   const fieldTitle = container.querySelector("#fieldTitle");
+  const fieldBooked = container.querySelector("#fieldBooked");
   const fieldMapsUrl = container.querySelector("#fieldMapsUrl");
   wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"), container.querySelector("#fieldMapsNameHint"));
   const moveDayRow = container.querySelector("#moveDayRow");
@@ -7767,7 +7774,7 @@ export function mountScheduleView(container, ctx) {
             <div class="t-time">${e.time || ""}</div>
             <div class="t-card ${e.done ? "is-done" : ""}">
               <button class="t-done-btn ${e.done ? "done" : ""}" data-done-id="${e.id}" title="${e.done ? "取消完成" : "勾選完成"}"><i class="fa-solid fa-check"></i></button>
-              <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>${e.done ? `<span class="t-done-tag"><i class="fa-solid fa-circle-check"></i> 已完成</span>` : ""}
+              <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>${e.booked ? `<span class="t-booked-tag"><i class="fa-solid fa-ticket"></i> 已預約</span>` : ""}${e.done ? `<span class="t-done-tag"><i class="fa-solid fa-circle-check"></i> 已完成</span>` : ""}
               <div class="t-title">${e.title || "（未命名）"}</div>
               ${e.location?.googleMapsUrl ? `<div class="t-loc-name t-nav-icon" data-nav-url="${e.location.googleMapsUrl}"><i class="fa-solid fa-location-arrow"></i>${e.location?.placeName || "在 Google 地圖開啟"}</div>` : ""}
               ${e.note ? `<div class="t-note"><i class="fa-solid fa-triangle-exclamation"></i><span>${truncate(e.note, 20)}</span></div>` : ""}
@@ -7868,6 +7875,7 @@ export function mountScheduleView(container, ctx) {
     fieldMapsUrl.dispatchEvent(new Event("input"));
     fieldNote.value = "";
     moveDayRow.style.display = "none";
+    fieldBooked.checked = false;
     editingEventOriginalDate = null;
     renderTodoList();
     updateSaveButton();
@@ -7985,6 +7993,7 @@ export function mountScheduleView(container, ctx) {
     fieldTime.value = ev.time || "10:00";
     fieldTitle.value = ev.title || "";
     editingEventOriginalDate = ev.date;
+    fieldBooked.checked = !!ev.booked;
     const moveDayOptions = days.includes(ev.date) ? days : [ev.date, ...days];
     fieldMoveDay.innerHTML = moveDayOptions
       .map((d) => `<option value="${d}">${dayFullLabel(d)}${d === ev.date ? " · 目前" : ""}</option>`)
@@ -8122,6 +8131,7 @@ export function mountScheduleView(container, ctx) {
       title: fieldTitle.value.trim(),
       location: withMapsUrl({}, fieldMapsUrl.value),
       note: fieldNote.value.trim(),
+      booked: fieldBooked.checked,
       todos: sheetTodos.map((t) => ({ id: t.id, text: t.text, checked: t.checked })),
       createdBy: memberId,
     };
