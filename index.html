@@ -557,8 +557,9 @@ button, input, textarea {
 
 .timeline{ padding-bottom: 4px; }
 .t-item{ display: flex; gap: 10px; margin-bottom: 12px; align-items: stretch; }
-.t-item.dragging{ opacity: 0.4; }
-.t-drag{ display: flex; align-items: center; color: var(--sage-light); cursor: grab; padding-top: 2px; font-size: 16px; }
+.t-item.dragging{ opacity: 0.55; }
+.t-item.dragging .t-card{ box-shadow: var(--shadow-lg); }
+.t-drag{ display: flex; align-items: center; justify-content: center; width: 30px; margin-left: -6px; color: var(--sage); cursor: grab; font-size: 17px; touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .t-time{ width: 40px; flex: 0 0 auto; font-size: 12px; color: var(--ink-soft); padding-top: 14px; font-weight: 500; }
 .t-card{ flex: 1; background: var(--white); border-radius: 18px; padding: 12px 44px 12px 14px; box-shadow: var(--shadow-sm); cursor: pointer; min-width: 0; position: relative; }
 .t-card.is-done{ background: var(--sage-light); }
@@ -7725,7 +7726,7 @@ export function mountScheduleView(container, ctx) {
       .map((e) => {
         const meta = CATEGORY_META[e.category] || CATEGORY_META.spot;
         return `
-          <div class="t-item" draggable="true" data-event-id="${e.id}">
+          <div class="t-item" data-event-id="${e.id}">
             <div class="t-drag"><i class="fa-solid fa-grip-lines"></i></div>
             <div class="t-time">${e.time || ""}</div>
             <div class="t-card ${e.done ? "is-done" : ""}">
@@ -7762,25 +7763,60 @@ export function mountScheduleView(container, ctx) {
           window.open(icon.dataset.navUrl, "_blank", "noopener");
         });
       });
-      item.addEventListener("dragstart", () => {
-        dragEl = item;
-        item.classList.add("dragging");
-      });
-      item.addEventListener("dragend", () => {
-        item.classList.remove("dragging");
-        commitReorder();
-      });
+      wireDragHandle(item);
     });
-
-    timelineEl.addEventListener("dragover", handleDragOver);
   }
 
-  function handleDragOver(e) {
-    e.preventDefault();
-    if (!dragEl) return;
-    const after = getDragAfterElement(timelineEl, e.clientY);
-    if (after == null) timelineEl.appendChild(dragEl);
-    else timelineEl.insertBefore(dragEl, after);
+  /* ---------- 拖曳調整順序 ----------
+   * 原本用瀏覽器內建的 HTML5 拖放（draggable），那套在手機上幾乎不能用：
+   * 手指一拖，瀏覽器會當成捲動頁面，或要長按很久才觸發，而且 iPhone 支援很差。
+   * 改成用 Pointer Events 自己處理，只在左邊的把手（三條線）上啟動，
+   * 把手設成 touch-action: none，手指按在把手上拖就是排序，按在別的地方仍然正常捲動頁面。
+   * 拖到畫面上下邊緣時會自動捲動，方便把行程拖到很遠的位置。 */
+  function wireDragHandle(item) {
+    const handle = item.querySelector(".t-drag");
+    let idsBefore = [];
+    let lastY = 0;
+    let scrollRaf = null;
+
+    function autoScroll() {
+      const edge = 90;
+      const speed = 12;
+      if (lastY < edge) window.scrollBy(0, -speed);
+      else if (lastY > window.innerHeight - edge) window.scrollBy(0, speed);
+      moveDragged();
+      scrollRaf = requestAnimationFrame(autoScroll);
+    }
+    function moveDragged() {
+      const after = getDragAfterElement(timelineEl, lastY);
+      if (after == null) timelineEl.appendChild(item);
+      else timelineEl.insertBefore(item, after);
+    }
+
+    handle.addEventListener("pointerdown", (e) => {
+      e.preventDefault();
+      dragEl = item;
+      lastY = e.clientY;
+      idsBefore = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
+      item.classList.add("dragging");
+      handle.setPointerCapture(e.pointerId);
+      scrollRaf = requestAnimationFrame(autoScroll);
+    });
+    handle.addEventListener("pointermove", (e) => {
+      if (dragEl !== item) return;
+      lastY = e.clientY;
+    });
+    function endDrag(e) {
+      if (dragEl !== item) return;
+      cancelAnimationFrame(scrollRaf);
+      dragEl = null;
+      item.classList.remove("dragging");
+      try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
+      const idsAfter = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
+      if (idsAfter.join() !== idsBefore.join()) commitReorder();
+    }
+    handle.addEventListener("pointerup", endDrag);
+    handle.addEventListener("pointercancel", endDrag);
   }
   function getDragAfterElement(container_, y) {
     const items = [...container_.querySelectorAll(".t-item:not(.dragging)")];
