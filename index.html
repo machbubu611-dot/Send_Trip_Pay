@@ -7706,7 +7706,9 @@ export function mountScheduleView(container, ctx) {
     }
   }
 
+  let timelineRenderId = 0; // 每次重畫行程列表就 +1，讓還在跑的拖曳知道「畫面已經換了」
   function renderTimeline() {
+    timelineRenderId++;
     const dayIndex = officialDays.indexOf(selectedDate) + 1;
     sectionLabelEl.textContent = isSpareDay(selectedDate) ? `備選日 ${spareDayNumber(selectedDate)} 行程` : `Day ${dayIndex} 行程`;
     // 備選日隨時可以刪（裡面有行程的話，刪除前會先跟使用者確認）
@@ -7768,55 +7770,81 @@ export function mountScheduleView(container, ctx) {
   }
 
   /* ---------- 拖曳調整順序 ----------
-   * 原本用瀏覽器內建的 HTML5 拖放（draggable），那套在手機上幾乎不能用：
-   * 手指一拖，瀏覽器會當成捲動頁面，或要長按很久才觸發，而且 iPhone 支援很差。
-   * 改成用 Pointer Events 自己處理，只在左邊的把手（三條線）上啟動，
-   * 把手設成 touch-action: none，手指按在把手上拖就是排序，按在別的地方仍然正常捲動頁面。
-   * 拖到畫面上下邊緣時會自動捲動，方便把行程拖到很遠的位置。 */
+   * 原本用瀏覽器內建的 HTML5 拖放，手機上幾乎不能用，所以改成 Pointer Events 自己處理，
+   * 只在左邊的把手（三條線）上啟動。
+   *
+   * 上一版有幾個嚴重問題，這版一併修掉：
+   *  1. 一按到把手就立刻進入拖曳，太敏感——現在要手指在把手上移動超過 8px 才算開始拖。
+   *  2. 如果手指放開的事件被瀏覽器吃掉（例如頁面正在捲動），拖曳迴圈會一直跑下去，
+   *     每一幀都把那張行程塞回畫面，造成「殘影」，切換到別天之後上一天的行程還會
+   *     冒出來。現在每次重畫行程列表都會換一個編號，拖曳迴圈偵測到編號不一樣
+   *     （或那張卡片已經不在畫面上）就立刻自己停掉。
+   *  3. 手指被瀏覽器接管（pointercancel）時，直接把列表還原成資料庫裡的順序，不會留半套。 */
   function wireDragHandle(item) {
     const handle = item.querySelector(".t-drag");
-    let idsBefore = [];
-    let lastY = 0;
-    let scrollRaf = null;
+    let st = null;
 
-    function autoScroll() {
-      const edge = 90;
-      const speed = 12;
-      if (lastY < edge) window.scrollBy(0, -speed);
-      else if (lastY > window.innerHeight - edge) window.scrollBy(0, speed);
-      moveDragged();
-      scrollRaf = requestAnimationFrame(autoScroll);
-    }
     function moveDragged() {
-      const after = getDragAfterElement(timelineEl, lastY);
+      const after = getDragAfterElement(timelineEl, st.lastY);
       if (after == null) timelineEl.appendChild(item);
       else timelineEl.insertBefore(item, after);
+    }
+    function loop() {
+      if (!st) return;
+      if (st.renderId !== timelineRenderId || !item.isConnected) {
+        stop(false);
+        return;
+      }
+      const edge = 90;
+      if (st.lastY < edge) window.scrollBy(0, -12);
+      else if (st.lastY > window.innerHeight - edge) window.scrollBy(0, 12);
+      moveDragged();
+      st.raf = requestAnimationFrame(loop);
+    }
+    function stop(commit) {
+      if (!st) return;
+      const s = st;
+      st = null;
+      cancelAnimationFrame(s.raf);
+      if (dragEl === item) dragEl = null;
+      item.classList.remove("dragging");
+      try { handle.releasePointerCapture(s.pointerId); } catch (_) {}
+      if (!s.started) return;
+      if (commit && s.renderId === timelineRenderId && item.isConnected) {
+        const idsAfter = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
+        if (idsAfter.join() !== s.idsBefore.join()) commitReorder();
+      } else if (s.renderId === timelineRenderId) {
+        renderTimeline(); // 被中斷：還原成資料庫裡的順序
+      }
     }
 
     handle.addEventListener("pointerdown", (e) => {
       e.preventDefault();
-      dragEl = item;
-      lastY = e.clientY;
-      idsBefore = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
-      item.classList.add("dragging");
+      st = {
+        startY: e.clientY,
+        lastY: e.clientY,
+        started: false,
+        pointerId: e.pointerId,
+        renderId: timelineRenderId,
+        idsBefore: [],
+        raf: null,
+      };
       handle.setPointerCapture(e.pointerId);
-      scrollRaf = requestAnimationFrame(autoScroll);
     });
     handle.addEventListener("pointermove", (e) => {
-      if (dragEl !== item) return;
-      lastY = e.clientY;
+      if (!st) return;
+      st.lastY = e.clientY;
+      if (!st.started && Math.abs(e.clientY - st.startY) > 8) {
+        st.started = true;
+        dragEl = item;
+        st.idsBefore = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
+        item.classList.add("dragging");
+        st.raf = requestAnimationFrame(loop);
+      }
     });
-    function endDrag(e) {
-      if (dragEl !== item) return;
-      cancelAnimationFrame(scrollRaf);
-      dragEl = null;
-      item.classList.remove("dragging");
-      try { handle.releasePointerCapture(e.pointerId); } catch (_) {}
-      const idsAfter = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
-      if (idsAfter.join() !== idsBefore.join()) commitReorder();
-    }
-    handle.addEventListener("pointerup", endDrag);
-    handle.addEventListener("pointercancel", endDrag);
+    handle.addEventListener("pointerup", () => stop(true));
+    handle.addEventListener("pointercancel", () => stop(false));
+    handle.addEventListener("lostpointercapture", () => stop(true));
   }
   function getDragAfterElement(container_, y) {
     const items = [...container_.querySelectorAll(".t-item:not(.dragging)")];
@@ -7830,7 +7858,10 @@ export function mountScheduleView(container, ctx) {
     ).element;
   }
   async function commitReorder() {
-    const ids = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId);
+    // 只處理「目前選的這一天」的行程，避免殘留的其他天卡片被連帶寫進順序
+    const todayIds = new Set(allEvents.filter((e) => e.date === selectedDate).map((e) => e.id));
+    const ids = [...timelineEl.querySelectorAll(".t-item")].map((el) => el.dataset.eventId).filter((id) => todayIds.has(id));
+    if (!ids.length) return;
     const updates = ids.map((id, index) => ({ id, order: index }));
     await reorderScheduleEvents(tripId, updates);
     // 不用手動 renderTimeline，onSnapshot 會自己觸發重繪
