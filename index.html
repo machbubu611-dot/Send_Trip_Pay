@@ -230,8 +230,8 @@ button, input, textarea {
   max-height: 90vh;
   overflow-y: auto;
 }
-.sheet-handle{ width: 40px; height: 4px; background: var(--sage-light); border-radius: 4px; margin: 0 auto 14px; }
-.sheet-title{ font-size: 16px; margin: 0 0 16px; text-align: center; }
+.sheet-handle{ width: 56px; height: 24px; margin: -8px auto 2px; background: var(--sage-light); background-clip: content-box; padding: 10px 8px; box-sizing: border-box; border-radius: 12px; touch-action: none; }
+.sheet-title{ font-size: 16px; margin: 0 0 16px; text-align: center; touch-action: none; }
 .field-label{ font-size: 12px; color: var(--ink-soft); display: block; margin: 0 0 8px; font-weight: 500; }
 .field-hint{ font-size: 10.5px; color: var(--ink-soft); margin: -10px 0 16px; }
 .text-input, .textarea-input{
@@ -8673,6 +8673,77 @@ async function boot() {
   handleRouteChange();
 }
 
+
+/* ==================== 下拉關閉視窗 ====================
+ * 所有從下面滑出來的視窗（編輯行程、新增記帳、住宿⋯⋯），原本要關掉只能點視窗外面那一小條、
+ * 或按「取消」。現在可以直接用手指往下拉：
+ *  - 按住最上面的小橫條或標題往下拖，視窗會跟著手指往下走，拉過約 110px 就關掉，沒拉夠會彈回去
+ *  - 視窗內容已經捲到最上面的時候，在內容上往下拉也一樣可以關
+ *  - 輸入框、可拖曳調整位置的相片等地方不會觸發，避免跟原本的操作打架
+ * 關掉的方式跟原本點外面一樣（移除 .show），所以每個視窗都通用，不用個別改。 */
+function installSheetSwipeToDismiss() {
+  let st = null;
+  document.addEventListener(
+    "touchstart",
+    (e) => {
+      st = null;
+      if (e.touches.length !== 1) return;
+      const sheet = e.target.closest(".sheet");
+      if (!sheet) return;
+      const overlay = sheet.closest(".sheet-overlay");
+      if (!overlay || !overlay.classList.contains("show")) return;
+      const inHeader = !!e.target.closest(".sheet-handle, .sheet-title");
+      if (!inHeader && e.target.closest(".photo-position-editor, .cover-position-editor, .edit-avatar-preview, input, textarea, select, button, .lib-grid, .cat-picker")) return;
+      st = { sheet, overlay, startY: e.touches[0].clientY, dy: 0, active: false, inHeader };
+    },
+    { passive: true }
+  );
+  document.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!st) return;
+      const dy = e.touches[0].clientY - st.startY;
+      if (!st.active) {
+        if (dy > 8 && (st.inHeader || st.sheet.scrollTop <= 0)) {
+          st.active = true;
+          st.sheet.style.transition = "none";
+        } else if (dy < -8) {
+          st = null; // 往上滑是正常捲動內容
+          return;
+        } else {
+          return;
+        }
+      }
+      e.preventDefault();
+      st.dy = Math.max(0, dy);
+      st.sheet.style.transform = `translateY(${st.dy}px)`;
+    },
+    { passive: false }
+  );
+  function finish() {
+    if (!st) return;
+    const s = st;
+    st = null;
+    if (!s.active) return;
+    s.sheet.style.transition = "transform 0.2s ease";
+    if (s.dy > 110) {
+      s.sheet.style.transform = "translateY(100%)";
+      setTimeout(() => {
+        s.overlay.classList.remove("show");
+        s.sheet.style.transform = "";
+        s.sheet.style.transition = "";
+      }, 190);
+    } else {
+      s.sheet.style.transform = "";
+      setTimeout(() => {
+        s.sheet.style.transition = "";
+      }, 210);
+    }
+  }
+  document.addEventListener("touchend", finish);
+  document.addEventListener("touchcancel", finish);
+}
+installSheetSwipeToDismiss();
 
 boot().catch(showFatalError);
   </script>
