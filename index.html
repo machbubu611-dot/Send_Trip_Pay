@@ -171,6 +171,8 @@ button, input, textarea {
   color: var(--ink-soft); font-size: 10px; flex: 1;
   background: none; border: none; font-family: var(--font-body); cursor: pointer;
 }
+.bottom-nav .nav-item{ position: relative; }
+.nav-badge{ position: absolute; top: 4px; left: calc(50% + 8px); min-width: 16px; height: 16px; border-radius: 8px; background: var(--danger); color: var(--white); font-size: 10px; font-weight: 700; line-height: 16px; text-align: center; padding: 0 4px; box-sizing: border-box; }
 .bottom-nav .nav-item i{ font-size: 19px; }
 .bottom-nav .nav-item.active{ color: var(--earth-dark); font-weight: 500; }
 .bottom-nav .nav-item.active i{ background: var(--sage-light); padding: 6px 14px; border-radius: 14px; }
@@ -865,7 +867,14 @@ button, input, textarea {
 .pc-time{ font-size: 10px; color: var(--ink-soft); }
 .pc-del{ margin-left: auto; font-size: 11px; color: var(--ink-soft); background: none; border: none; cursor: pointer; padding: 0 2px; }
 .pc-text{ font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
-.pc-form{ display: flex; gap: 6px; margin-top: 10px; }
+.pc-form{ display: flex; gap: 6px; margin-top: 10px; position: relative; }
+.pc-form .pc-at{ flex: 0 0 auto; width: 38px; border-radius: 14px; background: var(--sage-light); color: var(--sage-dark); font-size: 15px; font-weight: 700; border: none; cursor: pointer; }
+.mention-pop{ position: absolute; left: 0; right: 0; bottom: 44px; background: var(--white); border-radius: 14px; box-shadow: var(--shadow-lg); max-height: 180px; overflow-y: auto; z-index: 20; padding: 4px; }
+.mention-pop .mp-item{ padding: 9px 12px; border-radius: 10px; font-size: 13px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+.mention-pop .mp-item:active{ background: var(--sage-light); }
+.pc-mention{ color: var(--earth-dark); font-weight: 700; background: var(--earth-light); border-radius: 6px; padding: 0 3px; }
+.pc-bubble.pc-unread{ background: var(--earth-light); box-shadow: 0 0 0 2px var(--earth) inset; }
+.pc-newtag{ font-size: 10px; color: var(--white); background: var(--danger); border-radius: 8px; padding: 1px 6px; font-weight: 700; }
 .pc-form .pc-input{ flex: 1; min-width: 0; margin-bottom: 0; height: 38px; font-size: 13px; }
 .pc-form .pc-send{ flex: 0 0 auto; padding: 0 14px; border-radius: 14px; background: var(--earth); color: var(--white); font-size: 12.5px; border: none; cursor: pointer; }
 .pc-form .pc-send:disabled{ opacity: 0.5; }
@@ -1787,6 +1796,11 @@ export async function deleteJournalPost(tripId, postId) {
 export async function addJournalComment(tripId, postId, comment) {
   await updateDoc(doc(db, "trips", tripId, "journalPosts", postId), { comments: arrayUnion(comment) });
 }
+/** 記下「這個成員看過被標記的回覆了」，下方日誌分頁的紅點就會消失 */
+export function markMentionsSeen(tripId, memberId) {
+  if (!tripId || !memberId) return;
+  updateDoc(doc(db, "trips", tripId, "members", memberId), { mentionSeenAt: Date.now() }).catch(() => {});
+}
 export async function removeJournalComment(tripId, postId, comment) {
   // arrayRemove 要整個物件完全一樣才刪得掉，所以傳入的要是資料庫裡讀出來的那個回覆物件
   await updateDoc(doc(db, "trips", tripId, "journalPosts", postId), { comments: arrayRemove(comment) });
@@ -2510,6 +2524,7 @@ export function renderBottomNav(activeKey) {
       <button class="nav-item ${isActive ? "active" : ""}" data-nav="${item.key}">
         <i class="fa-solid ${item.icon}"></i>
         ${item.label}
+        <span class="nav-badge" id="navBadge-${item.key}" style="display:none;"></span>
       </button>
     `;
   }).join("");
@@ -4663,9 +4678,13 @@ export function renderJournalView() {
         <div class="auto-chip-row">
           <div class="auto-chip" id="authorChip"></div>
           <div class="auto-chip" id="dateChip"><i class="fa-solid fa-calendar"></i><span id="dateChipText"></span><i class="fa-solid fa-pen" style="font-size:9px; margin-left:4px; opacity:0.6;"></i></div>
+          <div class="auto-chip" id="timeChip"><i class="fa-solid fa-clock"></i><span id="timeChipText"></span><i class="fa-solid fa-pen" style="font-size:9px; margin-left:4px; opacity:0.6;"></i></div>
         </div>
         <div id="dateEditRow" style="display:none; justify-content:center; margin:-10px 0 16px;">
           <input type="date" id="dateEditInput" class="text-input" style="width:auto; margin-bottom:0;">
+        </div>
+        <div id="timeEditRow" style="display:none; justify-content:center; margin:-10px 0 16px;">
+          <input type="time" id="timeEditInput" class="text-input" style="width:auto; margin-bottom:0;">
         </div>
 
         <label class="field-label">照片 <span style="font-weight:400;color:var(--ink-soft);">· 可多選，也可以不放照片純文字發布</span></label>
@@ -4710,6 +4729,9 @@ export function mountJournalView(container, ctx) {
   const dateChipText = container.querySelector("#dateChipText");
   const dateEditRow = container.querySelector("#dateEditRow");
   const dateEditInput = container.querySelector("#dateEditInput");
+  const timeChipText = container.querySelector("#timeChipText");
+  const timeEditRow = container.querySelector("#timeEditRow");
+  const timeEditInput = container.querySelector("#timeEditInput");
   const photoInput = container.querySelector("#postPhotoInput");
   const photoPreview = container.querySelector("#postPhotoPreview");
   const captionInput = container.querySelector("#postCaption");
@@ -4721,6 +4743,14 @@ export function mountJournalView(container, ctx) {
   let existingPhotoPositions = {}; // { url: {x,y} }，已存在照片各自的顯示位置
   let newFilePositions = [];  // 跟 selectedNewFiles 同索引對應的 {x,y}
   let currentDate = "";
+  let currentTime = ""; // "HH:MM"，新增時帶入當下時間，可以改
+
+  const nowHHMM = () => new Date().toTimeString().slice(0, 5);
+  // 貼文顯示用的時間：有存發文時間就用它；舊貼文沒有，就用當初建立的時間
+  function postTimeOf(p) {
+    if (p.postTime) return p.postTime;
+    return p.createdAt?.seconds ? new Date(p.createdAt.seconds * 1000).toTimeString().slice(0, 5) : "";
+  }
 
   function parsePosition(str) {
     if (!str) return { x: 50, y: 50 };
@@ -4785,6 +4815,22 @@ export function mountJournalView(container, ctx) {
 
   /* ---------- 貼文下方的文字回覆 ---------- */
   const openComments = new Set(); // 展開回覆區的貼文 id，即時更新重畫時才不會被收起來
+  const autoOpenedForMention = new Set(); // 因為「有人標記你」而自動展開過的貼文，只自動展開一次，之後使用者自己收起來就尊重他
+  // 進來日誌分頁之前，這個成員最後一次看過標記是什麼時候：比這個晚的、標記到我的回覆，會特別標出來
+  const mentionSeenBaseline = me?.mentionSeenAt || 0;
+  const isUnreadMention = (c) => c.mentions?.includes(memberId) && c.authorId !== memberId && (c.createdAt || 0) > mentionSeenBaseline;
+  markMentionsSeen(tripId, memberId); // 進到日誌分頁就算看過了，下方的紅點會消失
+  const activeMembers = members.filter((m) => !m.removed);
+  function commentTextHtml(c) {
+    let html = esc(c.text);
+    (c.mentions || []).forEach((id) => {
+      const m = memberById(id);
+      if (!m) return;
+      const tag = `@${esc(m.name)}`;
+      html = html.split(tag).join(`<span class="pc-mention">${tag}</span>`);
+    });
+    return html;
+  }
   const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
   function commentTime(ms) {
     const d = new Date(ms);
@@ -4793,20 +4839,26 @@ export function mountJournalView(container, ctx) {
   }
   function commentsHtml(p) {
     const list = [...(p.comments || [])].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    if (list.some(isUnreadMention) && !autoOpenedForMention.has(p.id)) {
+      autoOpenedForMention.add(p.id);
+      openComments.add(p.id);
+    }
     const open = openComments.has(p.id);
     const items = list
       .map((c) => {
         const a = memberById(c.authorId);
+        const unread = isUnreadMention(c);
         return `
           <div class="pc-item">
             <div class="pc-avatar" style="${avatarBoxStyle(a)}">${avatarBoxContent(a)}</div>
-            <div class="pc-bubble">
+            <div class="pc-bubble ${unread ? "pc-unread" : ""}">
               <div class="pc-meta">
                 <span class="pc-name">${esc(a?.name || "（已離開的成員）")}</span>
                 <span class="pc-time">${commentTime(c.createdAt || 0)}</span>
+                ${unread ? `<span class="pc-newtag">標記你</span>` : ""}
                 ${c.authorId === memberId ? `<button class="pc-del" data-comment-id="${c.id}" title="刪除我的回覆"><i class="fa-solid fa-xmark"></i></button>` : ""}
               </div>
-              <div class="pc-text">${esc(c.text)}</div>
+              <div class="pc-text">${commentTextHtml(c)}</div>
             </div>
           </div>`;
       })
@@ -4817,7 +4869,9 @@ export function mountJournalView(container, ctx) {
         <div class="pc-body" style="display:${open ? "block" : "none"};">
           ${items}
           <div class="pc-form">
-            <input type="text" class="text-input pc-input" data-comment-input="${p.id}" placeholder="寫下回覆…" maxlength="300">
+            <div class="mention-pop" data-mention-pop style="display:none;"></div>
+            <button class="pc-at" type="button" data-comment-at title="標記旅伴">@</button>
+            <input type="text" class="text-input pc-input" data-comment-input="${p.id}" placeholder="寫下回覆，打 @ 可以標記旅伴" maxlength="300">
             <button class="pc-send" data-comment-send="${p.id}">送出</button>
           </div>
         </div>
@@ -4830,7 +4884,20 @@ export function mountJournalView(container, ctx) {
     const btn = feedEl.querySelector(`[data-comment-send="${postId}"]`);
     btn.disabled = true;
     try {
-      await addJournalComment(tripId, postId, { id: `c${Date.now()}${Math.random().toString(36).slice(2, 6)}`, authorId: memberId, text, createdAt: Date.now() });
+      // 找出文字裡 @ 了誰（名字長的先比對，避免「小明」被「小明明」吃掉）
+      // 比對到一個名字就把它從文字裡拿掉，再比對下一個，這樣打「@小明明」不會連「小明」也一起被標記
+      const mentions = [];
+      let remaining = text;
+      [...activeMembers]
+        .filter((m) => m.id !== memberId)
+        .sort((a, b) => b.name.length - a.name.length)
+        .forEach((m) => {
+          if (remaining.includes(`@${m.name}`)) {
+            mentions.push(m.id);
+            remaining = remaining.split(`@${m.name}`).join("");
+          }
+        });
+      await addJournalComment(tripId, postId, { id: `c${Date.now()}${Math.random().toString(36).slice(2, 6)}`, authorId: memberId, text, createdAt: Date.now(), mentions });
       input.value = "";
       touchMemberActivity(tripId, memberId);
     } catch (err) {
@@ -4853,9 +4920,10 @@ export function mountJournalView(container, ctx) {
     });
     const sorted = [...posts].sort((a, b) => {
       if (a.date !== b.date) return (b.date || "").localeCompare(a.date || "");
-      const at = a.createdAt?.seconds || 0;
-      const bt = b.createdAt?.seconds || 0;
-      return bt - at;
+      // 同一天：發文時間晚的在前面；時間一樣（或舊貼文沒有）再比建立順序
+      const timeCmp = postTimeOf(b).localeCompare(postTimeOf(a));
+      if (timeCmp !== 0) return timeCmp;
+      return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
     });
 
     let lastDate = null;
@@ -4866,7 +4934,7 @@ export function mountJournalView(container, ctx) {
         lastDate = p.date;
       }
       const author = memberById(p.authorId);
-      const time = p.createdAt?.seconds ? new Date(p.createdAt.seconds * 1000).toTimeString().slice(0, 5) : "";
+      const time = postTimeOf(p);
       const photos = p.photoUrls || [];
       const gridClass = photosGridClass(photos.length);
       const shown = photos.slice(0, gridClass === "n3" ? 3 : gridClass === "n4" ? 4 : photos.length);
@@ -4925,6 +4993,47 @@ export function mountJournalView(container, ctx) {
           e.preventDefault();
           sendComment(postId);
         }
+      });
+      // 打 @ 跳出旅伴清單，點選之後把「@名字 」填進輸入框
+      const input = box.querySelector("[data-comment-input]");
+      const pop = box.querySelector("[data-mention-pop]");
+      function hidePop() {
+        pop.style.display = "none";
+      }
+      function updatePop() {
+        const caret = input.selectionStart ?? input.value.length;
+        const m = input.value.slice(0, caret).match(/@([^\s@]*)$/);
+        if (!m) return hidePop();
+        const q = m[1].toLowerCase();
+        const cands = activeMembers.filter((x) => x.id !== memberId && x.name.toLowerCase().includes(q));
+        if (!cands.length) return hidePop();
+        pop.innerHTML = cands.map((x) => `<div class="mp-item" data-mid="${x.id}">${avatarInlinePrefix(x)}${esc(x.name)}</div>`).join("");
+        pop.dataset.start = String(caret - m[0].length);
+        pop.style.display = "block";
+      }
+      input.addEventListener("input", updatePop);
+      input.addEventListener("click", updatePop);
+      input.addEventListener("blur", () => setTimeout(hidePop, 150));
+      pop.addEventListener("pointerdown", (e) => {
+        e.preventDefault(); // 不要讓輸入框失去焦點，不然手機鍵盤會收起來
+        const item = e.target.closest("[data-mid]");
+        if (!item) return;
+        const mem = memberById(item.dataset.mid);
+        const start = Number(pop.dataset.start);
+        const caret = input.selectionStart ?? input.value.length;
+        const insert = `@${mem.name} `;
+        input.value = input.value.slice(0, start) + insert + input.value.slice(caret);
+        const pos = start + insert.length;
+        input.setSelectionRange(pos, pos);
+        hidePop();
+        input.focus();
+      });
+      box.querySelector("[data-comment-at]").addEventListener("click", () => {
+        const caret = input.selectionStart ?? input.value.length;
+        input.value = input.value.slice(0, caret) + "@" + input.value.slice(caret);
+        input.setSelectionRange(caret + 1, caret + 1);
+        input.focus();
+        updatePop();
       });
       box.querySelectorAll("[data-comment-id]").forEach((delBtn) => {
         delBtn.addEventListener("click", async () => {
@@ -5051,6 +5160,17 @@ export function mountJournalView(container, ctx) {
     dateEditRow.style.display = "none";
   });
 
+  container.querySelector("#timeChip").addEventListener("click", () => {
+    timeEditInput.value = currentTime;
+    timeEditRow.style.display = "flex";
+  });
+  timeEditInput.addEventListener("change", () => {
+    if (!timeEditInput.value) return;
+    currentTime = timeEditInput.value;
+    timeChipText.textContent = currentTime;
+    timeEditRow.style.display = "none";
+  });
+
   function openAddPost() {
     editingPostId = null;
     existingPhotoUrls = [];
@@ -5058,6 +5178,9 @@ export function mountJournalView(container, ctx) {
     existingPhotoPositions = {};
     newFilePositions = [];
     currentDate = todayOrTripStart();
+    currentTime = nowHHMM(); // 預設帶入當下時間
+    timeChipText.textContent = currentTime;
+    timeEditRow.style.display = "none";
     container.querySelector("#postSheetTitle").textContent = "新增日誌";
     deleteBtn.style.display = "none";
     container.querySelector("#authorChip").innerHTML = `<i class="fa-solid fa-user"></i>${avatarInlinePrefix(me)}${me?.name || ""}`;
@@ -5077,6 +5200,9 @@ export function mountJournalView(container, ctx) {
     });
     newFilePositions = [];
     currentDate = p.date;
+    currentTime = postTimeOf(p) || nowHHMM();
+    timeChipText.textContent = currentTime;
+    timeEditRow.style.display = "none";
     container.querySelector("#postSheetTitle").textContent = "編輯日誌";
     deleteBtn.style.display = "block";
     const author = memberById(p.authorId);
@@ -5118,6 +5244,7 @@ export function mountJournalView(container, ctx) {
       Object.assign(photoPositions, uploadedPositions);
       const payload = {
         date: currentDate,
+        postTime: currentTime,
         caption: captionInput.value.trim(),
         photoUrls,
         photoPositions,
@@ -8503,6 +8630,7 @@ const TAB_MOUNTERS = {
 
 const root = document.getElementById("app-root");
 let membersUnsubscribe = null;
+let journalBadgeUnsubscribe = null;
 let activeTabCleanup = null;
 
 /* ==================== 全域錯誤保護 ====================
@@ -8532,6 +8660,10 @@ function stopListeners() {
   if (membersUnsubscribe) {
     membersUnsubscribe();
     membersUnsubscribe = null;
+  }
+  if (journalBadgeUnsubscribe) {
+    journalBadgeUnsubscribe();
+    journalBadgeUnsubscribe = null;
   }
   if (activeTabCleanup) {
     activeTabCleanup();
@@ -8595,11 +8727,31 @@ async function renderAppShell(tabKey) {
   }
   // 排除「最近活動時間」之後的成員資料簽章：只有這個欄位變動時，不需要整個畫面重畫
   function membersSignature(members) {
-    return JSON.stringify(members.map(({ lastActiveAt, ...rest }) => rest));
+    return JSON.stringify(members.map(({ lastActiveAt, mentionSeenAt, ...rest }) => rest));
   }
   let lastPaintedSignature = null;
 
+  // 下方「日誌」分頁的紅點：有人在回覆裡 @ 我、而且我還沒看過的數量
+  let latestMembers = [];
+  let latestPosts = [];
+  function updateJournalBadge() {
+    const badge = root.querySelector("#navBadge-journal");
+    if (!badge) return;
+    const { currentMemberId } = getState();
+    const me = latestMembers.find((m) => m.id === currentMemberId);
+    const seenAt = me?.mentionSeenAt || 0;
+    let count = 0;
+    latestPosts.forEach((post) =>
+      (post.comments || []).forEach((c) => {
+        if (c.mentions?.includes(currentMemberId) && c.authorId !== currentMemberId && (c.createdAt || 0) > seenAt) count++;
+      })
+    );
+    // 人已經在日誌分頁的話不用顯示（進日誌分頁時就會記成已讀）
+    badge.style.display = count > 0 && tabKey !== "journal" ? "block" : "none";
+    badge.textContent = count > 9 ? "9+" : String(count);
+  }
   function paint(members) {
+    latestMembers = members;
     // 每次有人存檔都會更新他自己的 lastActiveAt，成員資料因此即時推播一次。
     // 如果實際上只有這個欄位變了，只更新最上方的頭像排序就好——
     // 整個畫面重畫的話，正在看的那一天會被重設回第一天、打開中的視窗會被關掉、
@@ -8608,6 +8760,7 @@ async function renderAppShell(tabKey) {
     if (lastPaintedSignature !== null && signature === lastPaintedSignature) {
       const stack = root.querySelector("#headerAvatarStack");
       if (stack) stack.innerHTML = buildAvatarStackHtml(headerMembersFrom(members));
+      updateJournalBadge();
       return;
     }
     lastPaintedSignature = signature;
@@ -8637,6 +8790,7 @@ async function renderAppShell(tabKey) {
     bindBottomNavEvents(root, (key) => { gotoRoute(`#/app/${key}`, currentTripId); });
     mountPinModal(root);
 
+    updateJournalBadge();
     activeTabCleanup?.();
     activeTabCleanup = TAB_MOUNTERS[tabKey]?.(root, {
       tripId: currentTripId,
@@ -8658,6 +8812,15 @@ async function renderAppShell(tabKey) {
       </div>
     `;
   });
+  // 日誌分頁的紅點要靠這個監聽；一定要放在 stopListeners() 之後，不然剛建立就被關掉了
+  journalBadgeUnsubscribe = listenJournalPosts(
+    currentTripId,
+    (posts) => {
+      latestPosts = posts;
+      updateJournalBadge();
+    },
+    () => {}
+  );
 }
 
 async function renderStandalone(view) {
