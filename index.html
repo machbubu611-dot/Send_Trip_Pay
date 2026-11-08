@@ -4815,6 +4815,7 @@ export function mountJournalView(container, ctx) {
 
   /* ---------- 貼文下方的文字回覆 ---------- */
   const openComments = new Set(); // 展開回覆區的貼文 id，即時更新重畫時才不會被收起來
+  let lastCommentTouch = 0; // 最後一次在回覆區按下去的時間，用來擋掉緊接著落到貼文卡片上的 click
   const autoOpenedForMention = new Set(); // 因為「有人標記你」而自動展開過的貼文，只自動展開一次，之後使用者自己收起來就尊重他
   // 進來日誌分頁之前，這個成員最後一次看過標記是什麼時候：比這個晚的、標記到我的回覆，會特別標出來
   const mentionSeenBaseline = me?.mentionSeenAt || 0;
@@ -4976,6 +4977,7 @@ export function mountJournalView(container, ctx) {
     feedEl.querySelectorAll(".post-comments").forEach((box) => {
       const postId = box.dataset.commentsFor;
       box.addEventListener("click", (e) => e.stopPropagation()); // 點回覆區不要誤觸「編輯貼文」
+      box.addEventListener("pointerdown", () => { lastCommentTouch = Date.now(); });
       box.querySelector("[data-toggle-comments]").addEventListener("click", () => {
         const body = box.querySelector(".pc-body");
         const willOpen = body.style.display === "none";
@@ -5014,8 +5016,13 @@ export function mountJournalView(container, ctx) {
       input.addEventListener("input", updatePop);
       input.addEventListener("click", updatePop);
       input.addEventListener("blur", () => setTimeout(hidePop, 150));
-      pop.addEventListener("pointerdown", (e) => {
-        e.preventDefault(); // 不要讓輸入框失去焦點，不然手機鍵盤會收起來
+      // 手指按下去時只負責「不要讓輸入框失去焦點」（手機鍵盤才不會收起來），
+      // 真正選人要等 click。不能在按下去的瞬間就把清單收起來——清單一消失，
+      // 接下來的 click 就會落到底下的貼文卡片上，被當成「點貼文」跳出編輯日誌（這就是之前的 bug）。
+      pop.addEventListener("pointerdown", (e) => e.preventDefault());
+      pop.addEventListener("click", (e) => {
+        e.preventDefault();
+        e.stopPropagation();
         const item = e.target.closest("[data-mid]");
         if (!item) return;
         const mem = memberById(item.dataset.mid);
@@ -5053,6 +5060,7 @@ export function mountJournalView(container, ctx) {
 
     feedEl.querySelectorAll(".post-card").forEach((card) => {
       card.addEventListener("click", () => {
+        if (Date.now() - lastCommentTouch < 700) return; // 剛在回覆區操作完，這個 click 不是要編輯貼文
         const p = posts.find((x) => x.id === card.dataset.postId);
         if (p.authorId !== memberId) {
           alert("只能編輯自己發布的日誌");
