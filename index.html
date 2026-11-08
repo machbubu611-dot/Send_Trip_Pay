@@ -4255,10 +4255,10 @@ export function mountExpenseView(container, ctx) {
     });
   });
 
+  // 新增記帳的預設日期：一律是「今天」，可以再改。出發前先買的東西，日期就是買的那天，
+  // 不該被帶到旅程第一天。
   function todayOrTripStart() {
-    const today = localISODate(new Date());
-    if (trip.startDate && trip.endDate && today >= trip.startDate && today <= trip.endDate) return today;
-    return trip.startDate || today;
+    return localISODate(new Date());
   }
 
   function openAddExpense() {
@@ -4800,10 +4800,10 @@ export function mountJournalView(container, ctx) {
     const idx = Math.round((new Date(dateStr) - new Date(trip.startDate)) / 86400000) + 1;
     return idx >= 1 ? `${dateStr} · Day ${idx}` : dateStr;
   }
+  // 新增日誌的預設日期：一律是「今天」（用手機當下的日期），可以再改。
+  // 以前如果今天不在旅程日期範圍內，會跳到旅程第一天，出發前或回國後寫日誌就會被帶到 12/1。
   function todayOrTripStart() {
-    const today = localISODate(new Date());
-    if (trip.startDate && trip.endDate && today >= trip.startDate && today <= trip.endDate) return today;
-    return trip.startDate || today;
+    return localISODate(new Date());
   }
 
   function photosGridClass(n) {
