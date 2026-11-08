@@ -5584,18 +5584,34 @@ export function mountPlanningView(container, ctx) {
     if (ids.length === members.length) return "全體";
     return ids.map((id) => memberById(id)?.name).filter(Boolean).join("、") || "（尚未選擇）";
   }
+  // 指派對象可以複選：點旅伴是「加入／取消」，所以可以指定兩個人、三個人，
+  // 不一定只能選全體或單一一個人；「全體」是一鍵全選。選完按「完成」收起來。
   function renderAssigneePicker() {
+    const allSelected = selectedAssignees.length === members.length;
     assigneePicker.innerHTML =
-      `<div class="assignee-opt ${selectedAssignees.length === members.length ? "selected" : ""}" data-assignee="all"><i class="fa-solid fa-users"></i>全體</div>` +
+      `<div class="assignee-opt ${allSelected ? "selected" : ""}" data-assignee="all"><i class="fa-solid fa-users"></i>全體</div>` +
       members
-        .map((m) => `<div class="assignee-opt ${selectedAssignees.length === 1 && selectedAssignees[0] === m.id ? "selected" : ""}" data-assignee="${m.id}">${avatarInlinePrefix(m)}${m.name}</div>`)
-        .join("");
+        .map((m) => `<div class="assignee-opt ${selectedAssignees.includes(m.id) && !allSelected ? "selected" : ""}" data-assignee="${m.id}">${avatarInlinePrefix(m)}${m.name}</div>`)
+        .join("") +
+      `<div class="assignee-opt" data-assignee="done" style="background:var(--earth); color:var(--white);"><i class="fa-solid fa-check"></i>完成</div>`;
     assigneePicker.querySelectorAll(".assignee-opt").forEach((opt) => {
       opt.addEventListener("click", () => {
-        selectedAssignees = opt.dataset.assignee === "all" ? members.map((m) => m.id) : [opt.dataset.assignee];
+        const key = opt.dataset.assignee;
+        if (key === "done") {
+          assigneePicker.style.display = "none";
+          return;
+        }
+        if (key === "all") {
+          selectedAssignees = members.map((m) => m.id);
+        } else if (selectedAssignees.length === members.length) {
+          selectedAssignees = [key]; // 目前是「全體」時點某個人，就是改成只選他一個，再點別人才是加進來
+        } else if (selectedAssignees.includes(key)) {
+          selectedAssignees = selectedAssignees.filter((id) => id !== key);
+        } else {
+          selectedAssignees = [...selectedAssignees, key];
+        }
         assigneeChipText.textContent = assigneesToLabel(selectedAssignees);
         renderAssigneePicker();
-        assigneePicker.style.display = "none";
       });
     });
   }
