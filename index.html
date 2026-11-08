@@ -7710,21 +7710,62 @@ function timePickerHtml(id) {
 function wireTimePicker(rootEl) {
   const hSel = rootEl.querySelector(".tp-h");
   const mSel = rootEl.querySelector(".tp-m");
+  const STANDARD_MINS = ["00", "15", "30", "45"];
+  let allowEmpty = false;
+
+  // 「--」代表沒設時間：時跟分連動，選了 -- 兩邊一起變 --，選了時間分鐘空著就補 00
+  hSel.addEventListener("change", () => {
+    if (!allowEmpty) return;
+    if (hSel.value === "") mSel.value = "";
+    else if (mSel.value === "") mSel.value = "00";
+  });
+  mSel.addEventListener("change", () => {
+    if (!allowEmpty) return;
+    if (mSel.value === "") hSel.value = "";
+    else if (hSel.value === "") hSel.value = "10";
+  });
+
   const picker = {
     get value() {
-      return `${hSel.value}:${mSel.value}`;
+      if (!hSel.value) return "";
+      return `${hSel.value}:${mSel.value || "00"}`;
     },
     set value(v) {
-      const [hh, mm] = (v || "10:00").split(":");
+      if (!v) {
+        if (allowEmpty) {
+          hSel.value = "";
+          mSel.value = "";
+          return;
+        }
+        v = "10:00";
+      }
+      const [hh, mm] = v.split(":");
       hSel.value = String(hh).padStart(2, "0");
-      [...mSel.options].slice(4).forEach((o) => o.remove());
-      if (!["00", "15", "30", "45"].includes(mm)) {
+      [...mSel.options].filter((o) => o.value !== "" && !STANDARD_MINS.includes(o.value)).forEach((o) => o.remove());
+      if (!STANDARD_MINS.includes(mm)) {
         const opt = document.createElement("option");
         opt.value = mm;
         opt.textContent = mm;
         mSel.appendChild(opt);
       }
       mSel.value = mm;
+    },
+    /** 允許「不設時間」：備選日的行程時間可以不填。關掉時如果目前是空的，會補回 10:00 */
+    setAllowEmpty(flag) {
+      if (flag === allowEmpty) return;
+      allowEmpty = flag;
+      if (flag) {
+        hSel.insertBefore(new Option("--", ""), hSel.firstChild);
+        mSel.insertBefore(new Option("--", ""), mSel.firstChild);
+      } else {
+        const wasEmpty = hSel.value === "";
+        if (hSel.options[0]?.value === "") hSel.options[0].remove();
+        if (mSel.options[0]?.value === "") mSel.options[0].remove();
+        if (wasEmpty) {
+          hSel.value = "10";
+          mSel.value = "00";
+        }
+      }
     },
   };
   picker.value = "10:00";
@@ -7916,6 +7957,8 @@ export function mountScheduleView(container, ctx) {
   wireMapsLinkButton(fieldMapsUrl, container.querySelector("#btnOpenFieldMaps"), container.querySelector("#fieldMapsNameHint"));
   const moveDayRow = container.querySelector("#moveDayRow");
   const fieldMoveDay = container.querySelector("#fieldMoveDay");
+  // 編輯時把行程移到備選日，時間就變成可以不填；移回正式日期則一定要有時間
+  fieldMoveDay.addEventListener("change", () => fieldTime.setAllowEmpty(isSpareDay(fieldMoveDay.value)));
   let editingEventOriginalDate = null; // 編輯中的行程原本在哪一天，存檔時用來判斷有沒有被移到別天
   const todoListEl = container.querySelector("#todoList");
   const fieldNote = container.querySelector("#fieldNote");
@@ -8045,7 +8088,7 @@ export function mountScheduleView(container, ctx) {
         return `
           <div class="t-item" data-event-id="${e.id}">
             <div class="t-drag"><i class="fa-solid fa-grip-lines"></i></div>
-            <div class="t-time">${e.time || ""}</div>
+            <div class="t-time">${e.time || "未定"}</div>
             <div class="t-card ${e.done ? "is-done" : ""}">
               <button class="t-done-btn ${e.done ? "done" : ""}" data-done-id="${e.id}" title="${e.done ? "取消完成" : "勾選完成"}"><i class="fa-solid fa-check"></i></button>
               <span class="t-cat" style="background:var(${meta.cssVar});">${meta.label}</span>${e.booked ? `<span class="t-booked-tag"><i class="fa-solid fa-ticket"></i> 已預約</span>` : ""}${e.done ? `<span class="t-done-tag"><i class="fa-solid fa-circle-check"></i> 已完成</span>` : ""}
@@ -8143,7 +8186,9 @@ export function mountScheduleView(container, ctx) {
     catPicker.querySelectorAll(".cat-opt").forEach((o) => o.classList.remove("selected"));
     hotelQuickpick.innerHTML = "";
     hotelQuickpick.style.display = "none";
-    fieldTime.value = "10:00";
+    // 備選日的行程時間可以不填：新增時預設空白；正式日期則預設 10:00
+    fieldTime.setAllowEmpty(isSpareDay(selectedDate));
+    fieldTime.value = isSpareDay(selectedDate) ? "" : "10:00";
     fieldTitle.value = "";
     fieldMapsUrl.value = "";
     fieldMapsUrl.dispatchEvent(new Event("input"));
@@ -8264,7 +8309,8 @@ export function mountScheduleView(container, ctx) {
       optEl.style.background = `var(${CATEGORY_META[ev.category].cssVar})`;
       optEl.style.color = "var(--white)";
     }
-    fieldTime.value = ev.time || "10:00";
+    fieldTime.setAllowEmpty(isSpareDay(ev.date));
+    fieldTime.value = ev.time || (isSpareDay(ev.date) ? "" : "10:00");
     fieldTitle.value = ev.title || "";
     editingEventOriginalDate = ev.date;
     fieldBooked.checked = !!ev.booked;
