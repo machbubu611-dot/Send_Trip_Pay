@@ -855,6 +855,20 @@ button, input, textarea {
 .post-photos.n1 .ph{ aspect-ratio: 4/3; }
 .ph.more-overlay::after{ content: attr(data-more); position: absolute; inset: 0; background: rgba(0,0,0,0.4); color: white; display: flex; align-items: center; justify-content: center; font-size: 18px; font-family: var(--font-heading); font-weight: 700; }
 
+.post-comments{ padding: 0 14px 12px; cursor: default; }
+.pc-toggle{ font-size: 12px; color: var(--sage-dark); background: none; border: none; padding: 4px 0; cursor: pointer; display: flex; align-items: center; gap: 5px; }
+.pc-item{ display: flex; gap: 8px; margin-top: 10px; }
+.pc-avatar{ width: 26px; height: 26px; border-radius: 50%; flex: 0 0 auto; display: flex; align-items: center; justify-content: center; font-size: 12px; background: var(--sage-light); overflow: hidden; background-size: cover; }
+.pc-bubble{ flex: 1; min-width: 0; background: var(--cream); border-radius: 14px; padding: 7px 11px; }
+.pc-meta{ display: flex; align-items: baseline; gap: 6px; }
+.pc-name{ font-size: 11px; font-weight: 700; color: var(--ink); }
+.pc-time{ font-size: 10px; color: var(--ink-soft); }
+.pc-del{ margin-left: auto; font-size: 11px; color: var(--ink-soft); background: none; border: none; cursor: pointer; padding: 0 2px; }
+.pc-text{ font-size: 12.5px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; margin-top: 2px; }
+.pc-form{ display: flex; gap: 6px; margin-top: 10px; }
+.pc-form .pc-input{ flex: 1; min-width: 0; margin-bottom: 0; height: 38px; font-size: 13px; }
+.pc-form .pc-send{ flex: 0 0 auto; padding: 0 14px; border-radius: 14px; background: var(--earth); color: var(--white); font-size: 12.5px; border: none; cursor: pointer; }
+.pc-form .pc-send:disabled{ opacity: 0.5; }
 .post-caption{ padding: 12px 14px 14px; font-size: 13px; line-height: 1.6; }
 
 .auto-chip-row{ display: flex; gap: 8px; justify-content: center; margin-bottom: 16px; flex-wrap: wrap; }
@@ -1762,6 +1776,20 @@ export async function updateJournalPost(tripId, postId, payload) {
 }
 export async function deleteJournalPost(tripId, postId) {
   await deleteDoc(doc(db, "trips", tripId, "journalPosts", postId));
+}
+
+/**
+ * 日誌貼文下面的文字回覆。
+ * 回覆直接存在貼文文件自己的 comments 陣列裡（{id, authorId, text, createdAt}），
+ * 不另外開子集合，所以 Security Rules 不用改，任何旅伴都能回覆。
+ * createdAt 用本機時間的毫秒數（陣列裡不能放伺服器時間戳記）。
+ */
+export async function addJournalComment(tripId, postId, comment) {
+  await updateDoc(doc(db, "trips", tripId, "journalPosts", postId), { comments: arrayUnion(comment) });
+}
+export async function removeJournalComment(tripId, postId, comment) {
+  // arrayRemove 要整個物件完全一樣才刪得掉，所以傳入的要是資料庫裡讀出來的那個回覆物件
+  await updateDoc(doc(db, "trips", tripId, "journalPosts", postId), { comments: arrayRemove(comment) });
 }
 
 /* ---------- trips/{tripId}/planningItems ---------- */
@@ -4755,7 +4783,74 @@ export function mountJournalView(container, ctx) {
     return "n4";
   }
 
+  /* ---------- 貼文下方的文字回覆 ---------- */
+  const openComments = new Set(); // 展開回覆區的貼文 id，即時更新重畫時才不會被收起來
+  const esc = (t) => String(t ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  function commentTime(ms) {
+    const d = new Date(ms);
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  }
+  function commentsHtml(p) {
+    const list = [...(p.comments || [])].sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
+    const open = openComments.has(p.id);
+    const items = list
+      .map((c) => {
+        const a = memberById(c.authorId);
+        return `
+          <div class="pc-item">
+            <div class="pc-avatar" style="${avatarBoxStyle(a)}">${avatarBoxContent(a)}</div>
+            <div class="pc-bubble">
+              <div class="pc-meta">
+                <span class="pc-name">${esc(a?.name || "（已離開的成員）")}</span>
+                <span class="pc-time">${commentTime(c.createdAt || 0)}</span>
+                ${c.authorId === memberId ? `<button class="pc-del" data-comment-id="${c.id}" title="刪除我的回覆"><i class="fa-solid fa-xmark"></i></button>` : ""}
+              </div>
+              <div class="pc-text">${esc(c.text)}</div>
+            </div>
+          </div>`;
+      })
+      .join("");
+    return `
+      <div class="post-comments" data-comments-for="${p.id}">
+        <button class="pc-toggle" data-toggle-comments="${p.id}"><i class="fa-regular fa-comment"></i> ${list.length ? `${list.length} 則回覆` : "回覆"}</button>
+        <div class="pc-body" style="display:${open ? "block" : "none"};">
+          ${items}
+          <div class="pc-form">
+            <input type="text" class="text-input pc-input" data-comment-input="${p.id}" placeholder="寫下回覆…" maxlength="300">
+            <button class="pc-send" data-comment-send="${p.id}">送出</button>
+          </div>
+        </div>
+      </div>`;
+  }
+  async function sendComment(postId) {
+    const input = feedEl.querySelector(`[data-comment-input="${postId}"]`);
+    const text = (input?.value || "").trim();
+    if (!text) return;
+    const btn = feedEl.querySelector(`[data-comment-send="${postId}"]`);
+    btn.disabled = true;
+    try {
+      await addJournalComment(tripId, postId, { id: `c${Date.now()}${Math.random().toString(36).slice(2, 6)}`, authorId: memberId, text, createdAt: Date.now() });
+      input.value = "";
+      touchMemberActivity(tripId, memberId);
+    } catch (err) {
+      console.error("[送出回覆失敗]", err);
+      alert("送出失敗，請檢查網路連線後再試一次。");
+    } finally {
+      btn.disabled = false;
+    }
+  }
+
   function renderFeed(posts) {
+    // 即時更新會把整個列表重畫，先記下每個回覆輸入框裡打到一半的字，重畫後放回去，
+    // 不然別人剛好回覆的瞬間，你正在打的字就不見了
+    const drafts = {};
+    let focusedPostId = null;
+    feedEl.querySelectorAll("[data-comment-input]").forEach((inp) => {
+      const id = inp.dataset.commentInput;
+      if (inp.value) drafts[id] = inp.value;
+      if (document.activeElement === inp) focusedPostId = id;
+    });
     const sorted = [...posts].sort((a, b) => {
       if (a.date !== b.date) return (b.date || "").localeCompare(a.date || "");
       const at = a.createdAt?.seconds || 0;
@@ -4797,11 +4892,55 @@ export function mountJournalView(container, ctx) {
           </div>
           ${photosHtml}
           ${p.caption ? `<div class="post-caption" style="${photos.length ? "" : "padding-top:0;"}">${p.caption}</div>` : ""}
+          ${commentsHtml(p)}
         </div>
       `);
     });
 
     feedEl.innerHTML = parts.join("") || `<p style="text-align:center;color:var(--ink-soft);padding:30px 0;font-size:13px;">還沒有人寫日誌，第一篇讓你來吧</p>`;
+
+    Object.entries(drafts).forEach(([id, value]) => {
+      const inp = feedEl.querySelector(`[data-comment-input="${id}"]`);
+      if (inp) inp.value = value;
+    });
+    if (focusedPostId) feedEl.querySelector(`[data-comment-input="${focusedPostId}"]`)?.focus();
+
+    feedEl.querySelectorAll(".post-comments").forEach((box) => {
+      const postId = box.dataset.commentsFor;
+      box.addEventListener("click", (e) => e.stopPropagation()); // 點回覆區不要誤觸「編輯貼文」
+      box.querySelector("[data-toggle-comments]").addEventListener("click", () => {
+        const body = box.querySelector(".pc-body");
+        const willOpen = body.style.display === "none";
+        body.style.display = willOpen ? "block" : "none";
+        if (willOpen) {
+          openComments.add(postId);
+          body.querySelector(".pc-input").focus();
+        } else {
+          openComments.delete(postId);
+        }
+      });
+      box.querySelector("[data-comment-send]").addEventListener("click", () => sendComment(postId));
+      box.querySelector("[data-comment-input]").addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.isComposing) {
+          e.preventDefault();
+          sendComment(postId);
+        }
+      });
+      box.querySelectorAll("[data-comment-id]").forEach((delBtn) => {
+        delBtn.addEventListener("click", async () => {
+          if (!confirm("確定要刪除這則回覆嗎？")) return;
+          const post = posts.find((x) => x.id === postId);
+          const comment = (post?.comments || []).find((c) => c.id === delBtn.dataset.commentId);
+          if (!comment) return;
+          try {
+            await removeJournalComment(tripId, postId, comment);
+          } catch (err) {
+            console.error("[刪除回覆失敗]", err);
+            alert("刪除失敗，請檢查網路連線後再試一次。");
+          }
+        });
+      });
+    });
 
     feedEl.querySelectorAll(".post-card").forEach((card) => {
       card.addEventListener("click", () => {
