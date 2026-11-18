@@ -1727,6 +1727,9 @@ export async function createDocument(tripId, payload) {
   });
   return ref_.id;
 }
+export async function updateDocument(tripId, documentId, payload) {
+  await updateDoc(doc(db, "trips", tripId, "documents", documentId), { ...payload, updatedAt: serverTimestamp() });
+}
 export async function deleteDocument(tripId, documentId) {
   await deleteDoc(doc(db, "trips", tripId, "documents", documentId));
 }
@@ -3030,8 +3033,8 @@ export function renderBookingsView() {
     <div class="sheet-overlay" id="docSheetOverlay">
       <div class="sheet">
         <div class="sheet-handle"></div>
-        <h3 class="sheet-title">上傳票券或憑證</h3>
-        <label class="field-label">選擇檔案</label>
+        <h3 class="sheet-title" id="docSheetTitle">上傳票券或憑證</h3>
+        <label class="field-label" id="docFileLabel">選擇檔案</label>
         <input type="file" accept="image/*,application/pdf" class="text-input" id="fDocFile">
         <label class="field-label">顯示名稱</label>
         <input type="text" class="text-input" id="fDocName" placeholder="例如：JR Pass 兌換憑證">
@@ -3809,12 +3812,21 @@ export function mountBookingsView(container, ctx) {
 
   /* ---------- 憑證 ---------- */
   const docSheet = container.querySelector("#docSheetOverlay");
-  container.querySelector("#btnAddDoc").addEventListener("click", () => {
+  let editingDoc = null; // 正在編輯的憑證；null 代表是新增
+  function setDocSheetMode(doc_) {
+    editingDoc = doc_;
+    container.querySelector("#docSheetTitle").textContent = doc_ ? "編輯憑證" : "上傳票券或憑證";
+    container.querySelector("#docFileLabel").innerHTML = doc_
+      ? `更換檔案 <span style="font-weight:400;color:var(--ink-soft);">· 選填，不選就沿用原本的檔案</span>`
+      : "選擇檔案";
+    container.querySelector("#btnSaveDoc").textContent = doc_ ? "儲存變更" : "上傳";
     container.querySelector("#fDocFile").value = "";
-    container.querySelector("#fDocName").value = "";
-    container.querySelectorAll("#docCatPicker .cat-chip").forEach((c, i) => c.classList.toggle("selected", i === 0));
+    container.querySelector("#fDocName").value = doc_ ? doc_.displayName || "" : "";
+    const wanted = doc_ && DOC_CATEGORIES.includes(doc_.category) ? doc_.category : doc_ ? "其他" : DOC_CATEGORIES[0];
+    container.querySelectorAll("#docCatPicker .cat-chip").forEach((c) => c.classList.toggle("selected", c.dataset.cat === wanted));
     docSheet.classList.add("show");
-  });
+  }
+  container.querySelector("#btnAddDoc").addEventListener("click", () => setDocSheetMode(null));
   container.querySelector("#btnCancelDoc").addEventListener("click", () => docSheet.classList.remove("show"));
   docSheet.addEventListener("click", (e) => { if (e.target === docSheet) docSheet.classList.remove("show"); });
   container.querySelector("#fDocFile").addEventListener("change", (e) => {
@@ -3831,16 +3843,32 @@ export function mountBookingsView(container, ctx) {
   });
   container.querySelector("#btnSaveDoc").addEventListener("click", async (e) => {
     const file = container.querySelector("#fDocFile").files[0];
-    if (!file) {
+    if (!file && !editingDoc) {
       alert("請先選擇檔案");
       return;
     }
     const btn = e.currentTarget;
     btn.disabled = true;
-    btn.textContent = "上傳中...";
+    btn.textContent = editingDoc ? "儲存中..." : "上傳中...";
     try {
-      const fileUrl = await uploadFile(`trips/${tripId}/documents/${Date.now()}-${file.name}`, file);
       const category = container.querySelector("#docCatPicker .cat-chip.selected")?.dataset.cat || "其他";
+      if (editingDoc) {
+        // 編輯：名稱、分類一定會更新；有選新檔案才換檔案，沒選就沿用原本的
+        const changes = {
+          displayName: container.querySelector("#fDocName").value.trim() || editingDoc.displayName,
+          category,
+        };
+        if (file) {
+          changes.fileUrl = await uploadFile(`trips/${tripId}/documents/${Date.now()}-${file.name}`, file);
+          changes.fileType = file.type === "application/pdf" ? "pdf" : "image";
+          changes.fileSizeBytes = file.size;
+        }
+        await updateDocument(tripId, editingDoc.id, changes);
+        touchMemberActivity(tripId, memberId);
+        docSheet.classList.remove("show");
+        return;
+      }
+      const fileUrl = await uploadFile(`trips/${tripId}/documents/${Date.now()}-${file.name}`, file);
       await createDocument(tripId, {
         fileUrl,
         fileType: file.type === "application/pdf" ? "pdf" : "image",
@@ -3861,7 +3889,7 @@ export function mountBookingsView(container, ctx) {
       );
     } finally {
       btn.disabled = false;
-      btn.textContent = "上傳";
+      btn.textContent = editingDoc ? "儲存變更" : "上傳";
     }
   });
 
@@ -3890,6 +3918,7 @@ export function mountBookingsView(container, ctx) {
               <div class="doc-icon ${d.fileType}"><i class="fa-solid ${fileIcon(d.fileType)}"></i></div>
               <div class="doc-info"><div class="doc-name">${d.displayName}</div><div class="doc-sub">${formatBytes(d.fileSizeBytes)} · ${d.category || ""}</div></div>
               <i class="fa-solid fa-eye doc-download" data-preview-trigger="${d.id}" title="預覽"></i>
+              <i class="fa-solid fa-pen doc-download" data-doc-edit="${d.id}" style="margin-left:8px;" title="編輯"></i>
               <i class="fa-solid fa-trash doc-download" data-doc-id="${d.id}" style="margin-left:8px;" title="刪除"></i>
             </div>
           `
@@ -3898,9 +3927,15 @@ export function mountBookingsView(container, ctx) {
 
       docsListEl.querySelectorAll(".doc-item").forEach((row) => {
         row.addEventListener("click", (e) => {
-          if (e.target.closest("[data-doc-id]")) return; // 刪除按鈕另外處理
+          if (e.target.closest("[data-doc-id]") || e.target.closest("[data-doc-edit]")) return; // 刪除、編輯按鈕另外處理
           const d = docs.find((x) => x.id === row.dataset.previewId);
           openDocPreview(d);
+        });
+      });
+      docsListEl.querySelectorAll("[data-doc-edit]").forEach((btn) => {
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setDocSheetMode(docs.find((x) => x.id === btn.dataset.docEdit));
         });
       });
       docsListEl.querySelectorAll("[data-doc-id]").forEach((btn) => {
