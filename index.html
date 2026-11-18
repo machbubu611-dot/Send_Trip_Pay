@@ -2143,7 +2143,9 @@ export async function fetchWeatherForDate(lat, lon, dateStr) {
       return result;
     } catch (err) {
       clearTimeout(timer);
-      lastError = err.name === "AbortError" ? new Error("連線逾時（超過 8 秒沒有回應）") : err;
+      if (err.name === "AbortError") lastError = new Error("連線逾時（超過 8 秒沒有回應）");
+      else if (err instanceof TypeError) lastError = new Error(`連不到天氣服務 api.open-meteo.com（${err.message}）。常見原因：瀏覽器的廣告／隱私阻擋外掛，或網路防火牆擋住`);
+      else lastError = err;
       if (attempt < 3) await new Promise((r) => setTimeout(r, 700 * attempt));
     }
   }
