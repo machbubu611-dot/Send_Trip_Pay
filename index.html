@@ -3086,15 +3086,22 @@ export function mountBookingsView(container, ctx) {
     });
   }
 
-  /* ---------- 子分頁切換 ---------- */
+  /* ---------- 子分頁切換（會記住上次看到哪一個） ---------- */
+  function activateBookingSubtab(name) {
+    const tab = container.querySelector(`.subtab[data-tab="${name}"]`);
+    if (!tab) return;
+    container.querySelectorAll(".subtab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    container.querySelectorAll(".booking-panel").forEach((p) => p.classList.remove("active"));
+    container.querySelector(`#panel-${name}`).classList.add("active");
+  }
   container.querySelectorAll(".subtab").forEach((tab) => {
     tab.addEventListener("click", () => {
-      container.querySelectorAll(".subtab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      container.querySelectorAll(".booking-panel").forEach((p) => p.classList.remove("active"));
-      container.querySelector(`#panel-${tab.dataset.tab}`).classList.add("active");
+      activateBookingSubtab(tab.dataset.tab);
+      setUiState(`bookings-subtab:${tripId}`, tab.dataset.tab);
     });
   });
+  activateBookingSubtab(getUiState(`bookings-subtab:${tripId}`, "flights"));
 
   /* ---------- 機票 ---------- */
   const countdownEl = container.querySelector("#flightCountdown");
@@ -4124,15 +4131,22 @@ export function mountExpenseView(container, ctx) {
 
   const memberById = (id) => members.find((m) => m.id === id);
 
-  /* ---------- 子分頁切換 ---------- */
+  /* ---------- 子分頁切換（會記住上次看到哪一個） ---------- */
+  function activateExpenseSubtab(name) {
+    const tab = container.querySelector(`.subtab[data-tab="${name}"]`);
+    if (!tab) return;
+    container.querySelectorAll(".subtab").forEach((t) => t.classList.remove("active"));
+    tab.classList.add("active");
+    container.querySelectorAll(".booking-panel").forEach((p) => p.classList.remove("active"));
+    container.querySelector(`#panel-${name}`).classList.add("active");
+  }
   container.querySelectorAll(".subtab").forEach((tab) => {
     tab.addEventListener("click", () => {
-      container.querySelectorAll(".subtab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      container.querySelectorAll(".booking-panel").forEach((p) => p.classList.remove("active"));
-      container.querySelector(`#panel-${tab.dataset.tab}`).classList.add("active");
+      activateExpenseSubtab(tab.dataset.tab);
+      setUiState(`expense-subtab:${tripId}`, tab.dataset.tab);
     });
   });
+  activateExpenseSubtab(getUiState(`expense-subtab:${tripId}`, "list"));
 
   /* ---------- 明細渲染 ---------- */
   function visibleExpenses() {
@@ -5524,8 +5538,11 @@ export function mountPlanningView(container, ctx) {
   enableDragScroll(container.querySelector("#planCatTabs"));
 
   let allItems = [];
-  let activeType = "todo";
-  let activePerson = "all";
+  // 分類和篩選的人會記住，重新載入之後回到原本看的那一個
+  let activeType = getUiState(`planning-type:${tripId}`, "todo");
+  if (!TYPE_META[activeType]) activeType = "todo";
+  let activePerson = getUiState(`planning-person:${tripId}`, "all");
+  if (activePerson !== "all" && !members.some((m) => m.id === activePerson)) activePerson = "all";
   let editingItemId = null;
   let selectedAssignees = []; // 目前挑選中的指派對象 id 陣列（單一情境：全體 或 一人）
   let existingPhotoUrls = [];
@@ -5533,8 +5550,10 @@ export function mountPlanningView(container, ctx) {
 
   /* ---------- Tabs ---------- */
   container.querySelectorAll("#planCatTabs .cat-tab").forEach((tab) => {
+    tab.classList.toggle("active", tab.dataset.type === activeType);
     tab.addEventListener("click", () => {
       activeType = tab.dataset.type;
+      setUiState(`planning-type:${tripId}`, activeType);
       container.querySelectorAll("#planCatTabs .cat-tab").forEach((t) => t.classList.remove("active"));
       tab.classList.add("active");
       renderList();
@@ -5551,6 +5570,7 @@ export function mountPlanningView(container, ctx) {
     personTabsEl.querySelectorAll(".person-tab").forEach((tab) => {
       tab.addEventListener("click", () => {
         activePerson = tab.dataset.person;
+        setUiState(`planning-person:${tripId}`, activePerson);
         personTabsEl.querySelectorAll(".person-tab").forEach((t) => t.classList.remove("active"));
         tab.classList.add("active");
         renderList();
@@ -7911,6 +7931,31 @@ function wireTimePicker(rootEl) {
   return picker;
 }
 
+/* ==================== 記住「我現在看到哪一頁」 ====================
+ * 預訂的子分頁（機票／住宿／租車／憑證）、記帳的明細／結算、準備的分類和篩選人、
+ * 行程選的日期，原本都只存在畫面上，只要畫面被重新載入（例如手機叫出相簿選照片之後，
+ * 瀏覽器為了省記憶體把頁面重載），就全部跳回預設的第一個。
+ * 現在會記在瀏覽器的 sessionStorage（同一個分頁有效，關掉分頁才清掉），
+ * 重新載入之後會回到你原本在看的那一頁。每趟旅程各記各的。 */
+const uiStateMemory = {};
+function getUiState(key, fallback) {
+  try {
+    const v = sessionStorage.getItem(`sendtrippay:ui:${key}`);
+    if (v !== null) return v;
+  } catch {
+    // sessionStorage 被擋（例如某些無痕模式）就只用記憶體
+  }
+  return uiStateMemory[key] ?? fallback;
+}
+function setUiState(key, value) {
+  uiStateMemory[key] = value;
+  try {
+    sessionStorage.setItem(`sendtrippay:ui:${key}`, value);
+  } catch {
+    // 存不進去就算了
+  }
+}
+
 /* 備選日：不是真的日期，是行程頁最後面幾個「暫放整天行程」的格子，
  * 事件的 date 欄位存成 "spare-1"、"spare-2"…，排到正式日期後可以再移進去。 */
 function isSpareDay(dateStr) {
@@ -8078,7 +8123,7 @@ export function mountScheduleView(container, ctx) {
   const todayStr = localISODate(new Date());
   // 記住這趟旅程上次看到哪一天：切分頁再回來、或畫面因為成員資料變動而重新掛載時，
   // 不會被打回第一天（或今天）
-  const rememberedDate = scheduleSelectedDateByTrip[tripId];
+  const rememberedDate = getUiState(`schedule-date:${tripId}`, scheduleSelectedDateByTrip[tripId]);
   let selectedDate = days.includes(rememberedDate) ? rememberedDate : officialDays.includes(todayStr) ? todayStr : days[0] || null;
 
   let allEvents = [];
@@ -8129,6 +8174,7 @@ export function mountScheduleView(container, ctx) {
       card.addEventListener("click", () => {
         selectedDate = card.dataset.date;
         scheduleSelectedDateByTrip[tripId] = selectedDate;
+        setUiState(`schedule-date:${tripId}`, selectedDate);
         renderDateScroll();
         renderTimeline();
         updateWeatherCard(selectedDate);
@@ -8594,6 +8640,7 @@ export function mountScheduleView(container, ctx) {
       if (selectedDate === dayA) selectedDate = dayB;
       else if (selectedDate === dayB) selectedDate = dayA;
       scheduleSelectedDateByTrip[tripId] = selectedDate;
+        setUiState(`schedule-date:${tripId}`, selectedDate);
       renderDateScroll();
       renderTimeline();
       updateWeatherCard(selectedDate);
@@ -8725,6 +8772,7 @@ export function mountScheduleView(container, ctx) {
     if (!ok) return;
     selectedDate = `spare-${spareCount}`;
     scheduleSelectedDateByTrip[tripId] = selectedDate;
+        setUiState(`schedule-date:${tripId}`, selectedDate);
     renderDateScroll();
     renderTimeline();
     updateWeatherCard(selectedDate);
@@ -8751,6 +8799,7 @@ export function mountScheduleView(container, ctx) {
       days = [...officialDays, ...spareIdsFor(spareCount)];
       selectedDate = n > 1 ? `spare-${n - 1}` : officialDays[officialDays.length - 1] || days[0] || null;
       scheduleSelectedDateByTrip[tripId] = selectedDate;
+        setUiState(`schedule-date:${tripId}`, selectedDate);
       renderDateScroll();
       renderTimeline();
       updateWeatherCard(selectedDate);
