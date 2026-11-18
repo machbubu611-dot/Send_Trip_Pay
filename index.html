@@ -542,6 +542,9 @@ button, input, textarea {
 .wc-stat i{ font-size: 14px; margin-bottom: 4px; display: block; }
 .wc-stat .wc-val{ font-size: 13px; font-weight: 500; }
 .wc-stat .wc-lbl{ font-size: 9.5px; opacity: 0.85; margin-top: 1px; }
+.wc-mode{ display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 10px; font-size: 10.5px; opacity: 0.95; }
+.wc-mode button{ background: rgba(255,255,255,0.18); color: var(--white); border: none; border-radius: 10px; padding: 4px 10px; font-size: 10.5px; cursor: pointer; }
+.wc-mode button.active{ background: var(--white); color: var(--sky-dark); font-weight: 700; }
 .wc-fetch-note{ font-size: 9.5px; opacity: 0.75; text-align: right; margin-top: 4px; }
 
 .section-label{ padding: 0 0 10px; font-size: 13px; color: var(--ink-soft); font-weight: 500; display: flex; align-items: center; gap: 6px; }
@@ -2158,6 +2161,57 @@ export async function fetchWeatherForDate(lat, lon, dateStr) {
     // 快取壞掉就當作沒有
   }
   throw lastError || new Error("天氣讀取失敗");
+}
+
+/* ==================== 天氣地點：跟著我的位置 ====================
+ * 天氣預設查「旅程目的地」的座標。到了當地之後，可以改成用手機/電腦目前的位置查，
+ * 這樣在目的地附近移動（例如從高松到小豆島）看到的就是當地的天氣。 */
+let devicePositionCache = null; // { at, lat, lon }
+export function getDevicePosition() {
+  if (devicePositionCache && Date.now() - devicePositionCache.at < 10 * 60 * 1000) return Promise.resolve(devicePositionCache);
+  return new Promise((resolve, reject) => {
+    if (!navigator.geolocation) {
+      reject(new Error("這個瀏覽器不支援定位"));
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        devicePositionCache = { at: Date.now(), lat: pos.coords.latitude, lon: pos.coords.longitude };
+        resolve(devicePositionCache);
+      },
+      (err) => {
+        const reasons = { 1: "沒有允許定位（可以到瀏覽器的網站設定打開定位權限）", 2: "目前取不到位置", 3: "定位逾時" };
+        reject(new Error(reasons[err.code] || "定位失敗"));
+      },
+      { enableHighAccuracy: false, timeout: 10000, maximumAge: 10 * 60 * 1000 }
+    );
+  });
+}
+export function distanceKm(lat1, lon1, lat2, lon2) {
+  const rad = (d) => (d * Math.PI) / 180;
+  const a =
+    Math.sin(rad(lat2 - lat1) / 2) ** 2 +
+    Math.cos(rad(lat1)) * Math.cos(rad(lat2)) * Math.sin(rad(lon2 - lon1) / 2) ** 2;
+  return 6371 * 2 * Math.asin(Math.sqrt(a));
+}
+const placeNameCache = {};
+/** 座標轉地名（OpenStreetMap Nominatim，免金鑰）；查不到就回傳「目前位置」 */
+export async function reversePlaceName(lat, lon) {
+  const key = `${lat.toFixed(2)},${lon.toFixed(2)}`;
+  if (placeNameCache[key]) return placeNameCache[key];
+  try {
+    const res = await fetch(
+      `https://nominatim.openstreetmap.org/reverse?lat=${lat}&lon=${lon}&format=json&zoom=10&accept-language=zh-TW`
+    );
+    if (!res.ok) throw new Error("reverse failed");
+    const data = await res.json();
+    const a = data.address || {};
+    const name = a.city || a.town || a.village || a.suburb || a.county || a.state || "目前位置";
+    placeNameCache[key] = name;
+    return name;
+  } catch {
+    return "目前位置";
+  }
 }
 
 /* ==================== 地址驗證（OpenStreetMap Nominatim，免金鑰、免費） ==================== */
@@ -7867,6 +7921,12 @@ export function renderScheduleView() {
           <div class="wc-stat"><i class="fa-solid fa-wind"></i><div class="wc-val" id="wcWind">--</div><div class="wc-lbl">風力</div></div>
           <div class="wc-stat"><i class="fa-solid fa-sun"></i><div class="wc-val" id="wcSunrise">--:--</div><div class="wc-lbl">日出</div></div>
         </div>
+        <div class="wc-mode" id="wcModeRow">
+          <span>天氣地點</span>
+          <button type="button" data-wmode="dest">旅程目的地</button>
+          <button type="button" data-wmode="gps">我的位置</button>
+          <button type="button" data-wmode="auto" title="人在目的地 200 公里內就用我的位置，不然用目的地">自動</button>
+        </div>
         <div class="wc-fetch-note" id="wcNote">資料來源：Open-Meteo</div>
       </div>
 
@@ -8043,6 +8103,53 @@ export function mountScheduleView(container, ctx) {
 
   /* ---------- 天氣卡（Open-Meteo，免金鑰） ---------- */
   let weatherRequestToken = 0;
+  /* 天氣地點模式（存在這台裝置上，每個人可以各自設定）：
+   *   dest = 一律查旅程目的地（預設）
+   *   gps  = 一律查我現在的位置
+   *   auto = 人在目的地 200 公里內才用我的位置，不然用目的地（在台灣規劃行程時不會顯示成台灣的天氣） */
+  const WEATHER_MODE_KEY = "sendtrippay:weatherMode";
+  let weatherMode = "dest";
+  try {
+    const saved = localStorage.getItem(WEATHER_MODE_KEY);
+    if (["dest", "gps", "auto"].includes(saved)) weatherMode = saved;
+  } catch {
+    // 讀不到就用預設
+  }
+  function renderWeatherModeButtons() {
+    container.querySelectorAll("#wcModeRow [data-wmode]").forEach((b) => b.classList.toggle("active", b.dataset.wmode === weatherMode));
+  }
+  container.querySelectorAll("#wcModeRow [data-wmode]").forEach((b) => {
+    b.addEventListener("click", () => {
+      weatherMode = b.dataset.wmode;
+      try {
+        localStorage.setItem(WEATHER_MODE_KEY, weatherMode);
+      } catch {
+        // 存不進去就只在這次有效
+      }
+      renderWeatherModeButtons();
+      updateWeatherCard(selectedDate);
+    });
+  });
+  renderWeatherModeButtons();
+
+  /** 依模式決定這次要查哪個座標。回傳 { lat, lon, label, note } 或 null（完全沒有可用的位置） */
+  async function resolveWeatherTarget(mode, destination) {
+    const destTarget = destination ? { lat: destination.lat, lon: destination.lon, label: destination.name, note: "" } : null;
+    if (mode === "dest") return destTarget;
+    let pos;
+    try {
+      pos = await getDevicePosition();
+    } catch (err) {
+      if (!destTarget) throw err;
+      return { ...destTarget, note: `無法取得你的位置（${err.message}），改顯示旅程目的地` };
+    }
+    if (mode === "auto" && destTarget && distanceKm(pos.lat, pos.lon, destination.lat, destination.lon) > 200) {
+      return { ...destTarget, note: "你目前不在目的地附近，顯示的是旅程目的地" };
+    }
+    const name = await reversePlaceName(pos.lat, pos.lon);
+    return { lat: pos.lat, lon: pos.lon, label: `${name}（我的位置）`, note: "" };
+  }
+
   async function updateWeatherCard(dateStr) {
     const thisRequest = ++weatherRequestToken; // 避免使用者快速切日期時，舊的回應蓋掉新的畫面
     // 備選日不是真的日期，沒有天氣可查，直接把天氣卡藏起來
@@ -8063,7 +8170,7 @@ export function mountScheduleView(container, ctx) {
     }
 
     const destination = trip.destination;
-    if (!destination) {
+    if (weatherMode === "dest" && !destination) {
       if (isStale()) return;
       wc("wcLocText").textContent = "尚未設定目的地";
       wc("wcCondText").textContent = "--";
@@ -8072,17 +8179,23 @@ export function mountScheduleView(container, ctx) {
       wc("wcRain").textContent = "--%";
       wc("wcWind").textContent = "--";
       wc("wcSunrise").textContent = "--:--";
-      wc("wcNote").textContent = "去旅程設定頁設定目的地城市，就能看到這裡的即時天氣";
+      wc("wcNote").textContent = "去旅程設定頁設定目的地城市，或把上面的「天氣地點」改成「我的位置」";
       return;
     }
 
     if (isStale()) return;
-    wc("wcLocText").textContent = destination.name;
+    wc("wcLocText").textContent = weatherMode === "dest" ? destination.name : "定位中…";
     wc("wcCondText").textContent = "讀取中...";
     wc("wcNote").textContent = "資料來源：Open-Meteo";
 
     try {
-      const weather = await fetchWeatherForDate(destination.lat, destination.lon, dateStr);
+      const target = await resolveWeatherTarget(weatherMode, destination);
+      if (isStale()) return;
+      wc("wcLocText").textContent = target.label;
+      const baseNote = target.note ? `資料來源：Open-Meteo・${target.note}` : "資料來源：Open-Meteo";
+      wc("wcNote").textContent = baseNote;
+
+      const weather = await fetchWeatherForDate(target.lat, target.lon, dateStr);
       if (isStale()) return;
 
       if (!weather || weather.outOfRange) {
